@@ -19,6 +19,17 @@ pub struct Cdp {
     events: VecDeque<Value>,
 }
 
+pub struct WaitTextOptions<'a> {
+    pub text: &'a str,
+    pub selector: Option<&'a str>,
+    pub state: &'a str,
+    pub exact: bool,
+    pub case_sensitive: bool,
+    pub include_hidden: bool,
+    pub timeout: Duration,
+    pub poll: Duration,
+}
+
 impl Cdp {
     pub fn connect(url: &str) -> Result<Self> {
         let (socket, _) = tungstenite::connect(url)?;
@@ -172,6 +183,62 @@ impl Cdp {
         }
     }
 
+    pub fn wait_text(&mut self, options: WaitTextOptions<'_>) -> Result<Value> {
+        let started = Instant::now();
+        loop {
+            let selector = options.selector.unwrap_or("body");
+            let candidates = self.evaluate(&format!(
+                "(()=>{{const visible=e=>{}||(!!(e.offsetWidth||e.offsetHeight||e.getClientRects().length)&&getComputedStyle(e).visibility!=='hidden');return [...document.querySelectorAll({})].filter(visible).map(e=>({{tag:e.tagName.toLowerCase(),id:e.id||null,text:e.innerText||e.textContent||'',name:e.getAttribute('aria-label')||e.getAttribute('title')||e.getAttribute('alt')||''}}))}})()",
+                options.include_hidden,
+                serde_json::to_string(selector)?
+            ))?;
+            let items = candidates.as_array().cloned().unwrap_or_default();
+            let element = items
+                .iter()
+                .find(|item| {
+                    ["text", "name"].iter().any(|field| {
+                        item.get(field)
+                            .and_then(Value::as_str)
+                            .is_some_and(|candidate| {
+                                text_matches(
+                                    candidate,
+                                    options.text,
+                                    options.exact,
+                                    options.case_sensitive,
+                                )
+                            })
+                    })
+                })
+                .cloned();
+            let matched = element.is_some();
+            let reached = if options.state == "absent" {
+                !matched
+            } else {
+                matched
+            };
+            let waited_ms = started.elapsed().as_millis();
+            if reached || started.elapsed() >= options.timeout {
+                return Ok(json!({
+                    "found": matched,
+                    "matched": matched,
+                    "state": options.state,
+                    "text": options.text,
+                    "selector": options.selector,
+                    "exact": options.exact,
+                    "case_sensitive": options.case_sensitive,
+                    "include_hidden": options.include_hidden,
+                    "waited_ms": waited_ms,
+                    "timeout_ms": options.timeout.as_millis(),
+                    "poll_ms": options.poll.as_millis(),
+                    "candidate_count": items.len(),
+                    "element": element,
+                    "timed_out": !reached,
+                }));
+            }
+            std::thread::sleep(options.poll.max(Duration::from_millis(25)));
+        }
+    }
+
     pub fn screenshot(&mut self, path: &Path, full_page: bool) -> Result<Value> {
         let params = if full_page {
             let metrics = self.command("Page.getLayoutMetrics", json!({}))?;
@@ -210,5 +277,38 @@ impl Cdp {
 
     pub fn snapshot(&mut self) -> Result<Value> {
         self.evaluate("(()=>({url:location.href,title:document.title,text:document.body?.innerText||'',html:document.documentElement?.outerHTML||'',interactive:[...document.querySelectorAll('a,button,input,select,textarea,[role=button]')].slice(0,200).map((e,i)=>({index:i,tag:e.tagName.toLowerCase(),text:(e.innerText||e.value||e.getAttribute('aria-label')||'').trim().slice(0,240),id:e.id||null,name:e.getAttribute('name'),role:e.getAttribute('role')}))}))()")
+    }
+}
+
+fn text_matches(candidate: &str, query: &str, exact: bool, case_sensitive: bool) -> bool {
+    let normalize = |value: &str| value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut haystack = normalize(candidate);
+    let mut needle = normalize(query);
+    if !case_sensitive {
+        haystack = haystack.to_lowercase();
+        needle = needle.to_lowercase();
+    }
+    if exact {
+        haystack == needle
+    } else {
+        haystack.contains(&needle)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::text_matches;
+
+    #[test]
+    fn wait_text_defaults_to_case_insensitive_contains() {
+        assert!(text_matches(
+            "  Saved   successfully ",
+            "saved",
+            false,
+            false
+        ));
+        assert!(!text_matches("Saved successfully", "saved", true, false));
+        assert!(text_matches("  Saved  ", "saved", true, false));
+        assert!(!text_matches("Saved", "saved", true, true));
     }
 }

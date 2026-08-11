@@ -1,7 +1,11 @@
 use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 use clap::{Args, Parser, Subcommand};
-use lexmount_browser::{Client, Error, Result, auth, cdp::Cdp, models::CreateSession};
+use lexmount_browser::{
+    Client, Error, Result, auth,
+    cdp::{Cdp, WaitTextOptions},
+    models::CreateSession,
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -207,6 +211,26 @@ enum ActionCommand {
         selector: String,
         #[arg(long, default_value_t = 30_000)]
         timeout_ms: u64,
+    },
+    WaitText {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        selector: Option<String>,
+        #[arg(long, value_parser = ["present", "absent"], default_value = "present")]
+        state: String,
+        #[arg(long)]
+        exact: bool,
+        #[arg(long)]
+        case_sensitive: bool,
+        #[arg(long)]
+        include_hidden: bool,
+        #[arg(long, default_value_t = 30_000)]
+        timeout_ms: u64,
+        #[arg(long, default_value_t = 250)]
+        poll_ms: u64,
     },
     Click {
         #[arg(long)]
@@ -452,6 +476,7 @@ fn run_action(client: Client, command: ActionCommand) -> Result<Value> {
         ActionCommand::OpenUrl { session_id, .. }
         | ActionCommand::Eval { session_id, .. }
         | ActionCommand::WaitSelector { session_id, .. }
+        | ActionCommand::WaitText { session_id, .. }
         | ActionCommand::Click { session_id, .. }
         | ActionCommand::Fill { session_id, .. }
         | ActionCommand::Screenshot { session_id, .. }
@@ -474,6 +499,26 @@ fn run_action(client: Client, command: ActionCommand) -> Result<Value> {
             timeout_ms,
             ..
         } => cdp.wait_selector(&selector, Duration::from_millis(timeout_ms)),
+        ActionCommand::WaitText {
+            text,
+            selector,
+            state,
+            exact,
+            case_sensitive,
+            include_hidden,
+            timeout_ms,
+            poll_ms,
+            ..
+        } => cdp.wait_text(WaitTextOptions {
+            text: &text,
+            selector: selector.as_deref(),
+            state: &state,
+            exact,
+            case_sensitive,
+            include_hidden,
+            timeout: Duration::from_millis(timeout_ms),
+            poll: Duration::from_millis(poll_ms),
+        }),
         ActionCommand::Click { selector, .. } => cdp.click(&selector),
         ActionCommand::Fill {
             selector, value, ..

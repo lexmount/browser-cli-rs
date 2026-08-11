@@ -10,9 +10,9 @@ import pathlib
 import sys
 import zipfile
 
-root = pathlib.Path(sys.argv[1])
+root = pathlib.Path(sys.argv[1]) / "lexmount-browser"
 output = pathlib.Path(sys.argv[2])
-files = sorted(path for path in (root / "lexmount-browser").rglob("*") if path.is_file())
+files = sorted(path for path in root.rglob("*") if path.is_file())
 with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
     for path in files:
         info = zipfile.ZipInfo(path.relative_to(root).as_posix(), (1980, 1, 1, 0, 0, 0))

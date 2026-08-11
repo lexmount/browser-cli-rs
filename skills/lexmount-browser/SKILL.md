@@ -5,7 +5,7 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 # Lexmount Browser
 
-Use the native Rust binary at `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` on macOS/Linux or `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` on Windows. It emits JSON and never requires Python, uv, or Git. The examples below abbreviate that path as `browser-cli`; resolve it to the platform path before running commands.
+Use the native Rust binary at `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` on macOS or `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` on Windows. Release binaries support macOS arm64, macOS Intel x64, and Windows x64. They emit JSON and never require Python, uv, or Git. The examples below abbreviate that path as `browser-cli`; resolve it to the platform path before running commands.
 
 ## Setup
 
@@ -20,7 +20,7 @@ Read [authentication.md](references/authentication.md) only when login or creden
 1. For temporary work, create a session with `browser-cli session create`. For sites that require login reuse, create or select a Context, then pass `--context-id` and `--context-mode read_write`.
 2. Open the absolute URL with `browser-cli action open-url`.
 3. Inspect first with `browser-cli action snapshot`; use the returned page state to choose stable selectors.
-4. Prefer `wait-selector`, `click`, and `fill`. Use `eval` or `raw` only when the ordinary commands cannot express the task.
+4. Prefer `wait-selector`, `wait-text`, `click`, and `fill`. `wait-text` is case-insensitive contains by default; add `--exact` only for an exact normalized match. Use `eval` or `raw` only when the ordinary commands cannot express the task.
 5. Take screenshots when visual confirmation matters.
 6. Close temporary sessions with `browser-cli session close`. A read-write Context saves state on normal session close.
 

@@ -16,6 +16,22 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test --all-targets --locked
       - run: cargo clippy --all-targets --locked -- -D warnings
+      - name: Verify release target contract
+        run: |
+          test "$(grep -c '^            target:' .github/workflows/release.yml)" -eq 3
+          ! grep -q 'x86_64-unknown-linux' .github/workflows/release.yml
+          grep -q 'aarch64-apple-darwin' .github/workflows/release.yml
+          grep -q 'x86_64-apple-darwin' .github/workflows/release.yml
+          grep -q 'x86_64-pc-windows-msvc' .github/workflows/release.yml
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
       - run: ./scripts/package-skill.sh
       - run: python3 -m zipfile --test dist/lexmount-browser.zip
+      - name: Verify SkillHub ZIP root
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          with zipfile.ZipFile("dist/lexmount-browser.zip") as archive:
+              names = set(archive.namelist())
+          assert "SKILL.md" in names
+          assert not any(name.startswith("lexmount-browser/") for name in names)
+          PY
