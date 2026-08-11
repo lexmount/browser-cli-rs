@@ -5,8 +5,7 @@ version="${LEXMOUNT_BROWSER_CLI_VERSION:-0.1.0}"
 repo="https://github.com/lexmount/browser-cli-rs/releases/download/v${version}"
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) target="aarch64-apple-darwin" ;;
-  Darwin-x86_64) target="x86_64-apple-darwin" ;;
-  *) echo "Unsupported platform: $(uname -s) $(uname -m). This release supports macOS arm64, macOS x86_64, and Windows x86_64." >&2; exit 2 ;;
+  *) echo "Unsupported platform: $(uname -s) $(uname -m). This release supports macOS arm64 and Windows x86_64." >&2; exit 2 ;;
 esac
 
 asset="browser-cli-v${version}-${target}"
