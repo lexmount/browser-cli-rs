@@ -13,18 +13,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            archive: tar.gz
           - os: macos-13
             target: x86_64-apple-darwin
-            archive: tar.gz
+            binary: browser-cli
+            suffix: ""
           - os: macos-14
             target: aarch64-apple-darwin
-            archive: tar.gz
+            binary: browser-cli
+            suffix: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            archive: zip
+            binary: browser-cli.exe
+            suffix: .exe
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -37,30 +37,34 @@ jobs:
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          asset="browser-cli-v${version}-${{ matrix.target }}.${{ matrix.archive }}"
-          if [ "${{ matrix.archive }}" = "zip" ]; then
-            (cd "target/${{ matrix.target }}/release" && 7z a "$GITHUB_WORKSPACE/$asset" browser-cli.exe)
-          else
-            tar -C "target/${{ matrix.target }}/release" -czf "$asset" browser-cli
-          fi
+          asset="browser-cli-v${version}-${{ matrix.target }}${{ matrix.suffix }}"
+          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$asset"
           if command -v sha256sum >/dev/null; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
       - uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.target }}
-          path: browser-cli-v*-${{ matrix.target }}.*
+          path: browser-cli-v*-${{ matrix.target }}*
 
   publish:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
         with:
           pattern: release-*
           merge-multiple: true
+      - name: Package SkillHub upload ZIP
+        run: |
+          ./scripts/package-skill.sh
+          version="${GITHUB_REF_NAME#v}"
+          cp dist/lexmount-browser.zip "lexmount-browser-v${version}-skillhub.zip"
+          sha256sum "lexmount-browser-v${version}-skillhub.zip" > "lexmount-browser-v${version}-skillhub.zip.sha256"
       - run: cat *.sha256 | sort -k2 > SHA256SUMS
       - run: rm -f -- *.sha256
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             browser-cli-v*
+            lexmount-browser-v*-skillhub.zip
             SHA256SUMS

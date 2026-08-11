@@ -30,6 +30,8 @@ browser-cli context force-release --context-id ID --yes
 browser-cli action open-url --session-id ID --url URL
 browser-cli action snapshot --session-id ID
 browser-cli action wait-selector --session-id ID --selector CSS
+browser-cli action wait-text --session-id ID --text "Saved" [--selector CSS]
+browser-cli action wait-text --session-id ID --text "Saved" [--selector CSS] --exact
 browser-cli action click --session-id ID --selector CSS
 browser-cli action fill --session-id ID --selector CSS --value TEXT
 browser-cli action screenshot --session-id ID --path FILE [--full-page]
@@ -39,3 +41,7 @@ browser-cli action raw --session-id ID --method CDP_METHOD --params-json JSON
 ```
 
 Use temporary sessions for public browsing. Use a dedicated persistent Context per account or purpose; avoid sharing one read-write Context between parallel tasks.
+
+`wait-text` uses case-insensitive normalized contains matching by default. Add
+`--exact` only when the entire normalized text must match. The obsolete
+`--match contains` form is not supported.

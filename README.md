@@ -28,6 +28,14 @@ The publishable Skill is in `skills/lexmount-browser`. Build a deterministic ZIP
 ./scripts/package-skill.sh
 ```
 
+The ZIP contains `SKILL.md` at its archive root and can be uploaded directly to
+SkillHub. Tagged releases publish it as `lexmount-browser-v<VERSION>-skillhub.zip`
+alongside the three platform binaries and `SHA256SUMS`.
+
 The package installer downloads a pinned GitHub Release binary and verifies its
 SHA-256 digest before installation. Set `LEXMOUNT_BROWSER_CLI_VERSION` only when
 testing a different published release.
+
+Published binaries are intentionally limited to three targets: macOS arm64,
+macOS Intel x64, and Windows x64. Linux remains a CI build host only and is not
+published as a release asset.
