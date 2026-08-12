@@ -27,14 +27,28 @@ jobs:
           grep -q 'needs: \[build-macos, build-windows\]' .github/workflows/release.yml
       - run: bash -n scripts/sign_and_notarize_macos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
+      - name: Verify Skill doctor rejects PATH fallback
+        run: |
+          test_dir="$(mktemp -d)"
+          trap 'rm -rf "$test_dir"' EXIT
+          mkdir -p "$test_dir/skill/scripts" "$test_dir/fake-path"
+          cp skills/lexmount-browser/scripts/doctor.sh "$test_dir/skill/scripts/doctor.sh"
+          ln -s /usr/bin/true "$test_dir/fake-path/browser-cli"
+          set +e
+          output="$(PATH="$test_dir/fake-path:/usr/bin:/bin" "$test_dir/skill/scripts/doctor.sh")"
+          status=$?
+          set -e
+          test "$status" -eq 1
+          test "$output" = '{"ok":false,"error":"command_not_found","message":"Skill-local browser-cli is missing. Run scripts/bootstrap.sh first."}'
+          ! grep -q 'command -v browser-cli' skills/lexmount-browser/scripts/doctor.sh
+          ! grep -q 'Get-Command browser-cli' skills/lexmount-browser/scripts/doctor.ps1
+      - name: Verify Python-free packaging contract
+        run: |
+          ! grep -R -E 'python3[[:space:]]|python[[:space:]]+-m|uv[[:space:]]' scripts skills .github/workflows
       - run: ./scripts/package-skill.sh
-      - run: python3 -m zipfile --test dist/lexmount-browser.zip
+      - run: unzip -t dist/lexmount-browser.zip
       - name: Verify SkillHub ZIP root
         run: |
-          python3 - <<'PY'
-          import zipfile
-          with zipfile.ZipFile("dist/lexmount-browser.zip") as archive:
-              names = set(archive.namelist())
-          assert "SKILL.md" in names
-          assert not any(name.startswith("lexmount-browser/") for name in names)
-          PY
+          unzip -Z1 dist/lexmount-browser.zip | grep -qx 'SKILL.md'
+          ! unzip -Z1 dist/lexmount-browser.zip | grep -q '^lexmount-browser/'
+          ! unzip -Z1 dist/lexmount-browser.zip | grep -q '^bin/'
