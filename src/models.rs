@@ -1,36 +1,95 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Session {
-    #[serde(alias = "id")]
     pub session_id: String,
-    #[serde(default)]
     pub status: String,
-    #[serde(default)]
     pub project_id: String,
-    #[serde(default, alias = "browser_type")]
     pub browser_mode: String,
-    #[serde(default)]
     pub region_id: Option<String>,
-    #[serde(default)]
     pub context_id: Option<String>,
-    #[serde(default)]
     pub context_description: Option<String>,
-    #[serde(default)]
     pub context_display_name: Option<String>,
-    #[serde(default)]
     pub created_at: Value,
-    #[serde(default)]
     pub inspect_url: String,
-    #[serde(default)]
     pub container_id: Option<String>,
-    #[serde(default)]
     pub ws: Option<String>,
-    #[serde(default)]
     pub create_error: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for Session {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // The API has returned both `id` and `session_id` in one object, and
+        // nullable values for fields that were historically strings. Accept
+        // both response shapes without changing the public model.
+        #[derive(Deserialize, Default)]
+        struct SessionResponse {
+            #[serde(default)]
+            session_id: Option<String>,
+            #[serde(default)]
+            id: Option<String>,
+            #[serde(default)]
+            status: Option<String>,
+            #[serde(default)]
+            project_id: Option<String>,
+            #[serde(default)]
+            browser_mode: Option<String>,
+            #[serde(default)]
+            browser_type: Option<String>,
+            #[serde(default)]
+            region_id: Option<String>,
+            #[serde(default)]
+            context_id: Option<String>,
+            #[serde(default)]
+            context_description: Option<String>,
+            #[serde(default)]
+            context_display_name: Option<String>,
+            #[serde(default)]
+            created_at: Value,
+            #[serde(default)]
+            inspect_url: Option<String>,
+            #[serde(default)]
+            container_id: Option<String>,
+            #[serde(default)]
+            ws: Option<String>,
+            #[serde(default)]
+            create_error: Option<String>,
+            #[serde(flatten)]
+            extra: Map<String, Value>,
+        }
+
+        let response = SessionResponse::deserialize(deserializer)?;
+        let session_id = response
+            .session_id
+            .or(response.id)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| serde::de::Error::missing_field("session_id or id"))?;
+        Ok(Self {
+            session_id,
+            status: response.status.unwrap_or_default(),
+            project_id: response.project_id.unwrap_or_default(),
+            browser_mode: response
+                .browser_mode
+                .or(response.browser_type)
+                .unwrap_or_default(),
+            region_id: response.region_id,
+            context_id: response.context_id,
+            context_description: response.context_description,
+            context_display_name: response.context_display_name,
+            created_at: response.created_at,
+            inspect_url: response.inspect_url.unwrap_or_default(),
+            container_id: response.container_id,
+            ws: response.ws,
+            create_error: response.create_error,
+            extra: response.extra,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
