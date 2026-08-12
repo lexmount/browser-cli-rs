@@ -24,9 +24,11 @@ jobs:
           grep -q 'x86_64-pc-windows-msvc' .github/workflows/release.yml
           grep -q 'environment: macos-release' .github/workflows/release.yml
           grep -q './scripts/sign_and_notarize_macos.sh' .github/workflows/release.yml
+          grep -q 'environment: cos-release' .github/workflows/release.yml
+          grep -q './scripts/upload-release-to-cos.sh cos-upload browser-cli' .github/workflows/release.yml
           grep -q 'needs: \[build-macos, build-windows\]' .github/workflows/release.yml
-          ! grep -q 'skills/lexmount-browser/bin/browser-cli.exe' .github/workflows/release.yml
-      - run: bash -n scripts/sign_and_notarize_macos.sh
+          ! grep -q 'skills/lexmount-browser/bin/' .github/workflows/release.yml
+      - run: bash -n scripts/sign_and_notarize_macos.sh scripts/upload-release-to-cos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
       - name: Verify Skill platform selection and PATH isolation
         run: |
@@ -43,14 +45,13 @@ jobs:
           test "$output" = '{"ok":false,"error":"unsupported_platform","message":"This Skill supports macOS arm64 through scripts/doctor.sh and Windows x64 through scripts/doctor.ps1."}'
           ! grep -q 'command -v browser-cli' skills/lexmount-browser/scripts/doctor.sh
           ! grep -q 'Get-Command browser-cli' skills/lexmount-browser/scripts/doctor.ps1
-      - name: Verify Python-free packaging contract
+      - name: Verify runtime packaging contract
         run: |
           ! grep -R -E 'python3[[:space:]]|python[[:space:]]+-m|uv[[:space:]]' scripts skills .github/workflows
-      - name: Stage Skill package fixtures
+      - name: Stage excluded Skill package fixtures
         run: |
           mkdir -p skills/lexmount-browser/bin
           printf 'macOS arm64 package fixture' > skills/lexmount-browser/bin/browser-cli
-          # This residual file must not enter the Skill ZIP until Windows signing is available.
           printf 'Windows x64 package fixture' > skills/lexmount-browser/bin/browser-cli.exe
       - run: ./scripts/package-skill.sh
       - run: unzip -t dist/lexmount-browser.zip
@@ -58,7 +59,4 @@ jobs:
         run: |
           unzip -Z1 dist/lexmount-browser.zip | grep -qx 'SKILL.md'
           ! unzip -Z1 dist/lexmount-browser.zip | grep -q '^lexmount-browser/'
-          unzip -Z1 dist/lexmount-browser.zip | grep -qx 'bin/browser-cli'
-          ! unzip -Z1 dist/lexmount-browser.zip | grep -q 'browser-cli.exe'
-          test "$(unzip -Z1 dist/lexmount-browser.zip | grep '^bin/' | wc -l)" -eq 1
-          zipinfo -l dist/lexmount-browser.zip | grep -q -- '^-rwxr-xr-x.*bin/browser-cli$'
+          ! unzip -Z1 dist/lexmount-browser.zip | grep -q '^bin/'

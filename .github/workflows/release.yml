@@ -61,6 +61,7 @@ jobs:
   publish:
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
+    environment: cos-release
     steps:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v4
@@ -70,14 +71,27 @@ jobs:
       - name: Package SkillHub upload ZIP
         run: |
           version="${GITHUB_REF_NAME#v}"
-          install -D -m 0755 \
-            "browser-cli-v${version}-aarch64-apple-darwin" \
-            skills/lexmount-browser/bin/browser-cli
-          file skills/lexmount-browser/bin/browser-cli | grep -q 'Mach-O 64-bit.*arm64'
           ./scripts/package-skill.sh
           cp dist/lexmount-browser.zip "lexmount-browser-v${version}-skillhub.zip"
           sha256sum "lexmount-browser-v${version}-skillhub.zip" > "lexmount-browser-v${version}-skillhub.zip.sha256"
       - run: cat *.sha256 | sort -k2 > SHA256SUMS
+      - name: Upload platform binaries to Tencent Cloud COS
+        env:
+          TENCENT_CLOUD_SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+          TENCENT_CLOUD_SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+          COS_BUCKET: ${{ vars.COS_BUCKET }}
+          COS_REGION: ${{ vars.COS_REGION }}
+          COS_PUBLIC_BASE_URL: ${{ vars.COS_PUBLIC_BASE_URL }}
+          COS_OBJECT_PREFIX: ${{ vars.COS_OBJECT_PREFIX }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir cos-upload
+          cp \
+            "browser-cli-v${version}-aarch64-apple-darwin" \
+            "browser-cli-v${version}-x86_64-pc-windows-msvc.exe" \
+            cos-upload/
+          (cd cos-upload && sha256sum browser-cli-v* | sort -k2 > SHA256SUMS)
+          ./scripts/upload-release-to-cos.sh cos-upload browser-cli "${version}"
       - run: rm -f -- *.sha256
       - uses: softprops/action-gh-release@v2
         with:

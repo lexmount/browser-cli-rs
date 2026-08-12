@@ -1,9 +1,10 @@
 $ErrorActionPreference = "Stop"
-$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "1.1.9" }
+$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "1.1.10" }
+$downloadBaseUrl = if ($env:LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL) { $env:LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL.TrimEnd('/') } else { "https://cli-bin-1377899528.cos.ap-nanjing.myqcloud.com/releases/browser-cli" }
 $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($architecture -ne "AMD64") { throw "Only Windows x64 is supported" }
 $asset = "browser-cli-v$version-x86_64-pc-windows-msvc.exe"
-$repo = "https://github.com/lexmount/browser-cli-rs/releases/download/v$version"
+$repo = "$downloadBaseUrl/v$version"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 try {

@@ -7,14 +7,16 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 Select the native Rust binary for the current platform:
 
-- macOS arm64: use the bundled `${CODEBUDDY_SKILL_DIR}/bin/browser-cli`.
-- Windows x64: run `${CODEBUDDY_SKILL_DIR}/scripts/bootstrap.ps1` when `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` is missing, then use that downloaded file. The bootstrap script downloads the fixed release version and verifies its SHA-256 digest.
+- macOS arm64: run `${CODEBUDDY_SKILL_DIR}/scripts/bootstrap.sh` when `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` is missing, then use that file.
+- Windows x64: run `${CODEBUDDY_SKILL_DIR}/scripts/bootstrap.ps1` when `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` is missing, then use that file.
+
+Both bootstrap scripts download the fixed release version from Tencent Cloud COS and verify its SHA-256 digest.
 
 Do not run the binary for the other platform. Both platform binaries emit JSON. The examples below abbreviate the selected path as `browser-cli`; resolve it before running commands.
 
 ## Setup
 
-1. On macOS arm64, run `doctor.sh`. Use the bundled binary; run `bootstrap.sh` only as a missing-binary fallback.
+1. On macOS arm64, run `bootstrap.sh` if `bin/browser-cli` is missing, then run `doctor.sh`.
 2. On Windows x64, run `bootstrap.ps1` if `bin/browser-cli.exe` is missing, then run `doctor.ps1`.
 3. If credentials are missing, run `browser-cli auth login`. Let the user approve in their browser. Never ask them to paste an API key into chat.
 4. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
