@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "1.1.8" }
+$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "1.1.9" }
 $architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
 if ($architecture -ne "AMD64") { throw "Only Windows x64 is supported" }
 $asset = "browser-cli-v$version-x86_64-pc-windows-msvc.exe"

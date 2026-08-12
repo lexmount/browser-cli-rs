@@ -8,20 +8,16 @@ trap 'rm -rf "$staging_dir"' EXIT INT TERM
 mkdir -p "$dist_dir"
 rm -f "$dist_dir/lexmount-browser.zip"
 
-for required_binary in \
-  "$skill_dir/bin/browser-cli" \
-  "$skill_dir/bin/browser-cli.exe"
-do
-  if [ ! -f "$required_binary" ]; then
-    echo "Missing required Skill binary: $required_binary" >&2
-    exit 1
-  fi
-done
+required_binary="$skill_dir/bin/browser-cli"
+if [ ! -f "$required_binary" ]; then
+  echo "Missing required Skill binary: $required_binary" >&2
+  exit 1
+fi
 
 (
   cd "$skill_dir"
   find . -type f ! -name '.DS_Store' \
-    \( ! -path './bin/*' -o -path './bin/browser-cli' -o -path './bin/browser-cli.exe' \) \
+    \( ! -path './bin/*' -o -path './bin/browser-cli' \) \
     -print | LC_ALL=C sort |
     while IFS= read -r relative_path; do
       mkdir -p "$staging_dir/$(dirname -- "$relative_path")"
