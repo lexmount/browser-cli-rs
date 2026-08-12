@@ -61,6 +61,7 @@ jobs:
   publish:
     needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: cos-release
     steps:
       - uses: actions/checkout@v5

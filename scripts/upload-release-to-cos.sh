@@ -34,8 +34,21 @@ curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 
 printf '%s  %s\n' "${coscli_sha256}" "${coscli_path}" | sha256sum --check --strict
 chmod 0700 "${coscli_path}"
 
-"${coscli_path}" cp "${source_dir}/" "cos://${COS_BUCKET}/${remote_path}/" \
-  --recursive \
+while read -r _ file_name; do
+  file_name="${file_name#\*}"
+  [[ "${file_name}" != */* && -n "${file_name}" ]] || { echo "Invalid manifest filename: ${file_name}" >&2; exit 3; }
+  "${coscli_path}" cp "${source_dir}/${file_name}" "cos://${COS_BUCKET}/${remote_path}/${file_name}" \
+    --part-size 1 \
+    --thread-num 4 \
+    --endpoint "cos.${COS_REGION}.myqcloud.com" \
+    --secret-id "${TENCENT_CLOUD_SECRET_ID}" \
+    --secret-key "${TENCENT_CLOUD_SECRET_KEY}" \
+    --init-skip=true \
+    --disable-log
+done <"${source_dir}/SHA256SUMS"
+
+# Publish the manifest last so clients never discover checksums for incomplete uploads.
+"${coscli_path}" cp "${source_dir}/SHA256SUMS" "cos://${COS_BUCKET}/${remote_path}/SHA256SUMS" \
   --endpoint "cos.${COS_REGION}.myqcloud.com" \
   --secret-id "${TENCENT_CLOUD_SECRET_ID}" \
   --secret-key "${TENCENT_CLOUD_SECRET_KEY}" \
