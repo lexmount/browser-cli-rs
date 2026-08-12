@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "0.1.2" }
+$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "0.1.3" }
 if (-not [Environment]::Is64BitOperatingSystem) { throw "Only 64-bit Windows is supported" }
 $asset = "browser-cli-v$version-x86_64-pc-windows-msvc.exe"
 $repo = "https://github.com/lexmount/browser-cli-rs/releases/download/v$version"

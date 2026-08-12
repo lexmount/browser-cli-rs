@@ -474,6 +474,42 @@ mod tests {
     }
 
     #[test]
+    fn session_list_accepts_nullable_urls_and_duplicate_compatibility_fields() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/instance/v2/sessions");
+            then.status(200).json_body(json!({
+                "sessions": [{
+                    "session_id": "s1",
+                    "id": "s1",
+                    "status": "closed",
+                    "browser_mode": "normal",
+                    "browser_type": "normal",
+                    "inspect_url": null
+                }]
+            }));
+        });
+
+        let result = client(&server).list_sessions(None).unwrap();
+        let session = &result.sessions[0];
+        assert_eq!(session.session_id, "s1");
+        assert_eq!(session.browser_mode, "normal");
+        assert_eq!(session.inspect_url, None);
+    }
+
+    #[test]
+    fn session_uses_legacy_compatibility_fields_as_fallbacks() {
+        let session: Session = serde_json::from_value(json!({
+            "id": "legacy-s1",
+            "browser_type": "normal"
+        }))
+        .unwrap();
+
+        assert_eq!(session.session_id, "legacy-s1");
+        assert_eq!(session.browser_mode, "normal");
+    }
+
+    #[test]
     fn maps_authentication_errors_without_exposing_headers() {
         let server = MockServer::start();
         server.mock(|when, then| {
