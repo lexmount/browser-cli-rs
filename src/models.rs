@@ -1,36 +1,87 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 use serde_json::{Map, Value};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct Session {
-    #[serde(alias = "id")]
     pub session_id: String,
-    #[serde(default)]
     pub status: String,
-    #[serde(default)]
     pub project_id: String,
-    #[serde(default, alias = "browser_type")]
     pub browser_mode: String,
-    #[serde(default)]
     pub region_id: Option<String>,
-    #[serde(default)]
     pub context_id: Option<String>,
-    #[serde(default)]
     pub context_description: Option<String>,
-    #[serde(default)]
     pub context_display_name: Option<String>,
-    #[serde(default)]
     pub created_at: Value,
-    #[serde(default)]
-    pub inspect_url: String,
-    #[serde(default)]
+    pub inspect_url: Option<String>,
     pub container_id: Option<String>,
-    #[serde(default)]
     pub ws: Option<String>,
-    #[serde(default)]
     pub create_error: Option<String>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[derive(Deserialize, Default)]
+struct SessionWire {
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    project_id: Option<String>,
+    #[serde(default)]
+    browser_mode: Option<String>,
+    #[serde(default)]
+    browser_type: Option<String>,
+    #[serde(default)]
+    region_id: Option<String>,
+    #[serde(default)]
+    context_id: Option<String>,
+    #[serde(default)]
+    context_description: Option<String>,
+    #[serde(default)]
+    context_display_name: Option<String>,
+    #[serde(default)]
+    created_at: Option<Value>,
+    #[serde(default)]
+    inspect_url: Option<String>,
+    #[serde(default)]
+    container_id: Option<String>,
+    #[serde(default)]
+    ws: Option<String>,
+    #[serde(default)]
+    create_error: Option<String>,
+    #[serde(flatten)]
+    extra: Map<String, Value>,
+}
+
+impl<'de> Deserialize<'de> for Session {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = SessionWire::deserialize(deserializer)?;
+        Ok(Self {
+            session_id: wire
+                .session_id
+                .or(wire.id)
+                .ok_or_else(|| D::Error::missing_field("session_id"))?,
+            status: wire.status.unwrap_or_default(),
+            project_id: wire.project_id.unwrap_or_default(),
+            browser_mode: wire.browser_mode.or(wire.browser_type).unwrap_or_default(),
+            region_id: wire.region_id,
+            context_id: wire.context_id,
+            context_description: wire.context_description,
+            context_display_name: wire.context_display_name,
+            created_at: wire.created_at.unwrap_or(Value::Null),
+            inspect_url: wire.inspect_url,
+            container_id: wire.container_id,
+            ws: wire.ws,
+            create_error: wire.create_error,
+            extra: wire.extra,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
