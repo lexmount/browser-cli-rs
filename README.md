@@ -37,4 +37,13 @@ SHA-256 digest before installation. Set `LEXMOUNT_BROWSER_CLI_VERSION` only when
 testing a different published release.
 
 Published binaries are intentionally limited to two targets: macOS arm64 and
-Windows x64. Linux and macOS Intel remain unsupported release platforms.
+Windows x64. The macOS binary is signed with a Developer ID Application
+certificate, hardened-runtime enabled, and accepted by Apple's notarization
+service before it is published. Linux and macOS Intel remain unsupported
+release platforms.
+
+The release workflow reads the signing certificate and notarization credentials
+from the `macos-release` GitHub environment. It requires
+`MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`,
+`MACOS_DEVELOPER_ID_P12_PASSWORD`, `APPLE_NOTARY_APPLE_ID`,
+`APPLE_NOTARY_TEAM_ID`, and `APPLE_NOTARY_APP_PASSWORD`.

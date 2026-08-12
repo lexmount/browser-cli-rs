@@ -8,41 +8,58 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-            binary: browser-cli
-            suffix: ""
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            binary: browser-cli.exe
-            suffix: .exe
-    runs-on: ${{ matrix.os }}
+  build-macos:
+    runs-on: macos-14
+    environment: macos-release
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: aarch64-apple-darwin
       - run: cargo test --locked
-      - run: cargo build --release --locked --target ${{ matrix.target }}
+      - run: cargo build --release --locked --target aarch64-apple-darwin
+      - name: Sign and notarize
+        env:
+          MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_NOTARY_APP_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
+        run: ./scripts/sign_and_notarize_macos.sh target/aarch64-apple-darwin/release/browser-cli
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="browser-cli-v${version}-aarch64-apple-darwin"
+          cp target/aarch64-apple-darwin/release/browser-cli "$asset"
+          shasum -a 256 "$asset" > "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-aarch64-apple-darwin
+          path: browser-cli-v*-aarch64-apple-darwin*
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - run: cargo test --locked
+      - run: cargo build --release --locked --target x86_64-pc-windows-msvc
       - name: Package
         shell: bash
         run: |
           version="${GITHUB_REF_NAME#v}"
-          asset="browser-cli-v${version}-${{ matrix.target }}${{ matrix.suffix }}"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$asset"
-          if command -v sha256sum >/dev/null; then sha256sum "$asset" > "$asset.sha256"; else shasum -a 256 "$asset" > "$asset.sha256"; fi
+          asset="browser-cli-v${version}-x86_64-pc-windows-msvc.exe"
+          cp target/x86_64-pc-windows-msvc/release/browser-cli.exe "$asset"
+          sha256sum "$asset" > "$asset.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.target }}
-          path: browser-cli-v*-${{ matrix.target }}*
+          name: release-x86_64-pc-windows-msvc
+          path: browser-cli-v*-x86_64-pc-windows-msvc*
 
   publish:
-    needs: build
+    needs: [build-macos, build-windows]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

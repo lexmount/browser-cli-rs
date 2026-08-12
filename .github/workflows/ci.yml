@@ -18,11 +18,14 @@ jobs:
       - run: cargo clippy --all-targets --locked -- -D warnings
       - name: Verify release target contract
         run: |
-          test "$(grep -c '^            target:' .github/workflows/release.yml)" -eq 2
           ! grep -q 'x86_64-unknown-linux' .github/workflows/release.yml
           ! grep -q 'x86_64-apple-darwin' .github/workflows/release.yml
           grep -q 'aarch64-apple-darwin' .github/workflows/release.yml
           grep -q 'x86_64-pc-windows-msvc' .github/workflows/release.yml
+          grep -q 'environment: macos-release' .github/workflows/release.yml
+          grep -q './scripts/sign_and_notarize_macos.sh' .github/workflows/release.yml
+          grep -q 'needs: \[build-macos, build-windows\]' .github/workflows/release.yml
+      - run: bash -n scripts/sign_and_notarize_macos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
       - run: ./scripts/package-skill.sh
       - run: python3 -m zipfile --test dist/lexmount-browser.zip
