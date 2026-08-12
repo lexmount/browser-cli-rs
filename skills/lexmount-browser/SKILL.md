@@ -5,18 +5,19 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 # Lexmount Browser
 
-Use the bundled native Rust binary that matches the current platform:
+Select the native Rust binary for the current platform:
 
-- macOS arm64: `${CODEBUDDY_SKILL_DIR}/bin/browser-cli`
-- Windows x64: `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe`
+- macOS arm64: use the bundled `${CODEBUDDY_SKILL_DIR}/bin/browser-cli`.
+- Windows x64: run `${CODEBUDDY_SKILL_DIR}/scripts/bootstrap.ps1` when `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` is missing, then use that downloaded file. The bootstrap script downloads the fixed release version and verifies its SHA-256 digest.
 
-Do not run the binary for the other platform. Both binaries emit JSON. The examples below abbreviate the selected platform path as `browser-cli`; resolve it before running commands.
+Do not run the binary for the other platform. Both platform binaries emit JSON. The examples below abbreviate the selected path as `browser-cli`; resolve it before running commands.
 
 ## Setup
 
-1. Run `doctor.sh` on macOS or `doctor.ps1` on Windows from `${CODEBUDDY_SKILL_DIR}/scripts/`. Use the bundled platform binary. Only if that binary is missing, run the matching bootstrap script after telling the user that it downloads a fixed-version replacement and verifies its SHA-256 digest.
-2. If credentials are missing, run `browser-cli auth login`. Let the user approve in their browser. Never ask them to paste an API key into chat.
-3. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
+1. On macOS arm64, run `doctor.sh`. Use the bundled binary; run `bootstrap.sh` only as a missing-binary fallback.
+2. On Windows x64, run `bootstrap.ps1` if `bin/browser-cli.exe` is missing, then run `doctor.ps1`.
+3. If credentials are missing, run `browser-cli auth login`. Let the user approve in their browser. Never ask them to paste an API key into chat.
+4. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
 
 Read [authentication.md](references/authentication.md) only when login or credentials fail. Read [commands.md](references/commands.md) when selecting commands. Read [troubleshooting.md](references/troubleshooting.md) only after an error.
 
