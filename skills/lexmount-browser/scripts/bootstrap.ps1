@@ -1,5 +1,5 @@
 $ErrorActionPreference = "Stop"
-$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "0.1.3" }
+$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "0.1.4" }
 if (-not [Environment]::Is64BitOperatingSystem) { throw "Only 64-bit Windows is supported" }
 $asset = "browser-cli-v$version-x86_64-pc-windows-msvc.exe"
 $repo = "https://github.com/lexmount/browser-cli-rs/releases/download/v$version"
@@ -8,7 +8,8 @@ New-Item -ItemType Directory -Path $tmp | Out-Null
 try {
   Invoke-WebRequest -UseBasicParsing "$repo/$asset" -OutFile (Join-Path $tmp $asset)
   Invoke-WebRequest -UseBasicParsing "$repo/SHA256SUMS" -OutFile (Join-Path $tmp "SHA256SUMS")
-  $line = Get-Content (Join-Path $tmp "SHA256SUMS") | Where-Object { $_ -match "\s+$([regex]::Escape($asset))$" } | Select-Object -First 1
+  # GNU sha256sum prefixes binary filenames with `*`; shasum uses plain whitespace.
+  $line = Get-Content (Join-Path $tmp "SHA256SUMS") | Where-Object { $_ -match "\s+\*?$([regex]::Escape($asset))$" } | Select-Object -First 1
   if (-not $line) { throw "No checksum published for $asset" }
   $expected = ($line -split "\s+")[0].ToLowerInvariant()
   $actual = (Get-FileHash (Join-Path $tmp $asset) -Algorithm SHA256).Hash.ToLowerInvariant()
