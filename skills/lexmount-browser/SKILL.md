@@ -5,7 +5,7 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 # Lexmount Browser
 
-Use the native Rust binary at `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` on macOS or `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` on Windows. Release binaries support macOS arm64 and Windows x64. They emit JSON and never require Python, uv, or Git. The examples below abbreviate that path as `browser-cli`; resolve it to the platform path before running commands.
+Use the native Rust binary at `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` on macOS or `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` on Windows. Release binaries support macOS arm64 and Windows x64 and emit JSON. The examples below abbreviate that path as `browser-cli`; resolve it to the platform path before running commands.
 
 ## Setup
 

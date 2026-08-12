@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-version="${LEXMOUNT_BROWSER_CLI_VERSION:-0.1.5}"
+version="${LEXMOUNT_BROWSER_CLI_VERSION:-0.1.6}"
 repo="https://github.com/lexmount/browser-cli-rs/releases/download/v${version}"
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) target="aarch64-apple-darwin" ;;
