@@ -1,6 +1,7 @@
 $ErrorActionPreference = "Stop"
-$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "1.1.7" }
-if (-not [Environment]::Is64BitOperatingSystem) { throw "Only 64-bit Windows is supported" }
+$version = if ($env:LEXMOUNT_BROWSER_CLI_VERSION) { $env:LEXMOUNT_BROWSER_CLI_VERSION } else { "1.1.8" }
+$architecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+if ($architecture -ne "AMD64") { throw "Only Windows x64 is supported" }
 $asset = "browser-cli-v$version-x86_64-pc-windows-msvc.exe"
 $repo = "https://github.com/lexmount/browser-cli-rs/releases/download/v$version"
 $tmp = Join-Path ([IO.Path]::GetTempPath()) ([Guid]::NewGuid().ToString())

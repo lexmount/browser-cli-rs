@@ -69,8 +69,14 @@ jobs:
           merge-multiple: true
       - name: Package SkillHub upload ZIP
         run: |
-          ./scripts/package-skill.sh
           version="${GITHUB_REF_NAME#v}"
+          install -D -m 0755 \
+            "browser-cli-v${version}-aarch64-apple-darwin" \
+            skills/lexmount-browser/bin/browser-cli
+          install -D -m 0755 \
+            "browser-cli-v${version}-x86_64-pc-windows-msvc.exe" \
+            skills/lexmount-browser/bin/browser-cli.exe
+          ./scripts/package-skill.sh
           cp dist/lexmount-browser.zip "lexmount-browser-v${version}-skillhub.zip"
           sha256sum "lexmount-browser-v${version}-skillhub.zip" > "lexmount-browser-v${version}-skillhub.zip.sha256"
       - run: cat *.sha256 | sort -k2 > SHA256SUMS

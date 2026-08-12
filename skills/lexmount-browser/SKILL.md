@@ -5,11 +5,16 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 # Lexmount Browser
 
-Use the native Rust binary at `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` on macOS or `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` on Windows. Release binaries support macOS arm64 and Windows x64 and emit JSON. The examples below abbreviate that path as `browser-cli`; resolve it to the platform path before running commands.
+Use the bundled native Rust binary that matches the current platform:
+
+- macOS arm64: `${CODEBUDDY_SKILL_DIR}/bin/browser-cli`
+- Windows x64: `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe`
+
+Do not run the binary for the other platform. Both binaries emit JSON. The examples below abbreviate the selected platform path as `browser-cli`; resolve it before running commands.
 
 ## Setup
 
-1. Run the platform `doctor` script from `${CODEBUDDY_SKILL_DIR}/scripts/`. If the binary is missing, run the matching bootstrap script after telling the user that it downloads a fixed-version release binary and verifies its SHA-256 digest.
+1. Run `doctor.sh` on macOS or `doctor.ps1` on Windows from `${CODEBUDDY_SKILL_DIR}/scripts/`. Use the bundled platform binary. Only if that binary is missing, run the matching bootstrap script after telling the user that it downloads a fixed-version replacement and verifies its SHA-256 digest.
 2. If credentials are missing, run `browser-cli auth login`. Let the user approve in their browser. Never ask them to paste an API key into chat.
 3. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
 

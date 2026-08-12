@@ -25,16 +25,22 @@ surface.
 The publishable Skill is in `skills/lexmount-browser`. Build a deterministic ZIP:
 
 ```bash
+mkdir -p skills/lexmount-browser/bin
+cp /path/to/macos-arm64/browser-cli skills/lexmount-browser/bin/browser-cli
+cp /path/to/windows-x64/browser-cli.exe skills/lexmount-browser/bin/browser-cli.exe
 ./scripts/package-skill.sh
 ```
 
-The ZIP contains `SKILL.md` at its archive root and can be uploaded directly to
-SkillHub. Tagged releases publish it as `lexmount-browser-v<VERSION>-skillhub.zip`
-alongside the two platform binaries and `SHA256SUMS`.
+The ZIP contains `SKILL.md` at its archive root plus the signed macOS arm64
+binary at `bin/browser-cli` and the Windows x64 binary at
+`bin/browser-cli.exe`. It can be uploaded directly to SkillHub. Tagged releases
+publish it as `lexmount-browser-v<VERSION>-skillhub.zip` alongside the standalone
+platform binaries and `SHA256SUMS`.
 
-The package installer downloads a pinned GitHub Release binary and verifies its
-SHA-256 digest before installation. Set `LEXMOUNT_BROWSER_CLI_VERSION` only when
-testing a different published release.
+The Skill uses the bundled binary for the current platform. Its bootstrap script
+downloads a pinned GitHub Release binary and verifies its SHA-256 digest only as
+a fallback when the bundled binary is missing. Set `LEXMOUNT_BROWSER_CLI_VERSION`
+only when testing a different published release.
 
 Published binaries are intentionally limited to two targets: macOS arm64 and
 Windows x64. The macOS binary is signed with a Developer ID Application
