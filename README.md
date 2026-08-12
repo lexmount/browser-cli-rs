@@ -25,22 +25,15 @@ surface.
 The publishable Skill is in `skills/lexmount-browser`. Build a deterministic ZIP:
 
 ```bash
-mkdir -p skills/lexmount-browser/bin
-cp /path/to/macos-arm64/browser-cli skills/lexmount-browser/bin/browser-cli
 ./scripts/package-skill.sh
 ```
 
-The ZIP contains `SKILL.md` at its archive root plus the signed macOS arm64
-binary at `bin/browser-cli`. It deliberately excludes the unsigned Windows x64
-executable so SkillHub does not reject or strip the package. Tagged releases
-publish it as `lexmount-browser-v<VERSION>-skillhub.zip` alongside the standalone
-platform binaries and `SHA256SUMS`.
-
-The Skill uses the bundled binary on macOS arm64. On Windows x64,
-`bootstrap.ps1` downloads the pinned GitHub Release executable and verifies its
-SHA-256 digest before use. The macOS bootstrap remains a missing-binary fallback.
-Set `LEXMOUNT_BROWSER_CLI_VERSION` only when testing a different published
-release.
+The ZIP contains `SKILL.md`, references, and platform bootstrap scripts at its
+archive root. Native executables are published separately and are not placed in
+the Skill ZIP. On first use, the matching bootstrap script downloads the pinned
+release from Tencent Cloud COS and verifies its SHA-256 digest. Set
+`LEXMOUNT_BROWSER_CLI_VERSION` or `LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL` only
+when testing a different published release or mirror.
 
 Published binaries are intentionally limited to two targets: macOS arm64 and
 Windows x64. The macOS binary is signed with a Developer ID Application
@@ -53,3 +46,9 @@ from the `macos-release` GitHub environment. It requires
 `MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64`,
 `MACOS_DEVELOPER_ID_P12_PASSWORD`, `APPLE_NOTARY_APPLE_ID`,
 `APPLE_NOTARY_TEAM_ID`, and `APPLE_NOTARY_APP_PASSWORD`.
+
+The publish job uploads both platform binaries and their checksum manifest to
+Tencent Cloud COS through the `cos-release` GitHub environment. It requires
+`TENCENT_CLOUD_SECRET_ID` and `TENCENT_CLOUD_SECRET_KEY` secrets plus
+`COS_BUCKET`, `COS_REGION`, `COS_PUBLIC_BASE_URL`, and `COS_OBJECT_PREFIX`
+variables.
