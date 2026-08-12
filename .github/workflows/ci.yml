@@ -27,7 +27,7 @@ jobs:
           grep -q 'needs: \[build-macos, build-windows\]' .github/workflows/release.yml
       - run: bash -n scripts/sign_and_notarize_macos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
-      - name: Verify Skill doctor rejects PATH fallback
+      - name: Verify Skill platform selection and PATH isolation
         run: |
           test_dir="$(mktemp -d)"
           trap 'rm -rf "$test_dir"' EXIT
@@ -38,17 +38,26 @@ jobs:
           output="$(PATH="$test_dir/fake-path:/usr/bin:/bin" "$test_dir/skill/scripts/doctor.sh")"
           status=$?
           set -e
-          test "$status" -eq 1
-          test "$output" = '{"ok":false,"error":"command_not_found","message":"Skill-local browser-cli is missing. Run scripts/bootstrap.sh first."}'
+          test "$status" -eq 2
+          test "$output" = '{"ok":false,"error":"unsupported_platform","message":"This Skill supports macOS arm64 through scripts/doctor.sh and Windows x64 through scripts/doctor.ps1."}'
           ! grep -q 'command -v browser-cli' skills/lexmount-browser/scripts/doctor.sh
           ! grep -q 'Get-Command browser-cli' skills/lexmount-browser/scripts/doctor.ps1
       - name: Verify Python-free packaging contract
         run: |
           ! grep -R -E 'python3[[:space:]]|python[[:space:]]+-m|uv[[:space:]]' scripts skills .github/workflows
+      - name: Stage platform package fixtures
+        run: |
+          mkdir -p skills/lexmount-browser/bin
+          printf 'macOS arm64 package fixture' > skills/lexmount-browser/bin/browser-cli
+          printf 'Windows x64 package fixture' > skills/lexmount-browser/bin/browser-cli.exe
       - run: ./scripts/package-skill.sh
       - run: unzip -t dist/lexmount-browser.zip
       - name: Verify SkillHub ZIP root
         run: |
           unzip -Z1 dist/lexmount-browser.zip | grep -qx 'SKILL.md'
           ! unzip -Z1 dist/lexmount-browser.zip | grep -q '^lexmount-browser/'
-          ! unzip -Z1 dist/lexmount-browser.zip | grep -q '^bin/'
+          unzip -Z1 dist/lexmount-browser.zip | grep -qx 'bin/browser-cli'
+          unzip -Z1 dist/lexmount-browser.zip | grep -qx 'bin/browser-cli.exe'
+          test "$(unzip -Z1 dist/lexmount-browser.zip | grep '^bin/' | wc -l)" -eq 2
+          zipinfo -l dist/lexmount-browser.zip | grep -q -- '^-rwxr-xr-x.*bin/browser-cli$'
+          zipinfo -l dist/lexmount-browser.zip | grep -q -- '^-rwxr-xr-x.*bin/browser-cli.exe$'

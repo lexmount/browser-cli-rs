@@ -18,15 +18,6 @@ do
   fi
 done
 
-file "$skill_dir/bin/browser-cli" | grep -q 'Mach-O 64-bit.*arm64' || {
-  echo "bin/browser-cli is not a macOS arm64 executable" >&2
-  exit 1
-}
-file "$skill_dir/bin/browser-cli.exe" | grep -q 'PE32+ executable.*x86-64' || {
-  echo "bin/browser-cli.exe is not a Windows x64 executable" >&2
-  exit 1
-}
-
 (
   cd "$skill_dir"
   find . -type f ! -name '.DS_Store' \

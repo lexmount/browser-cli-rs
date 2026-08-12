@@ -76,6 +76,8 @@ jobs:
           install -D -m 0755 \
             "browser-cli-v${version}-x86_64-pc-windows-msvc.exe" \
             skills/lexmount-browser/bin/browser-cli.exe
+          file skills/lexmount-browser/bin/browser-cli | grep -q 'Mach-O 64-bit.*arm64'
+          file skills/lexmount-browser/bin/browser-cli.exe | grep -q 'PE32+ executable.*x86-64'
           ./scripts/package-skill.sh
           cp dist/lexmount-browser.zip "lexmount-browser-v${version}-skillhub.zip"
           sha256sum "lexmount-browser-v${version}-skillhub.zip" > "lexmount-browser-v${version}-skillhub.zip.sha256"
