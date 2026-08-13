@@ -30,6 +30,11 @@ jobs:
           ! grep -q 'skills/lexmount-browser/bin/' .github/workflows/release.yml
       - run: bash -n scripts/sign_and_notarize_macos.sh scripts/upload-release-to-cos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
+      - name: Verify Skill bootstrap version
+        run: |
+          package_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)"
+          grep -Fq "else { \"${package_version}\" }" skills/lexmount-browser/scripts/bootstrap.ps1
+          grep -Fq "LEXMOUNT_BROWSER_CLI_VERSION:-${package_version}" skills/lexmount-browser/scripts/bootstrap.sh
       - name: Verify Skill platform selection and PATH isolation
         run: |
           test_dir="$(mktemp -d)"
@@ -65,10 +70,15 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
       - name: Bootstrap from COS with Windows PowerShell 5.1
         shell: powershell
         run: |
           if ($PSVersionTable.PSVersion.Major -ne 5) { throw "Expected Windows PowerShell 5.1" }
+          $latestTag = git tag --list "v*" --sort=-version:refname | Select-Object -First 1
+          if (-not $latestTag) { throw "No published version tag found" }
+          $env:LEXMOUNT_BROWSER_CLI_VERSION = $latestTag.TrimStart('v')
           $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "browser-cli-bootstrap"
           & .\skills\lexmount-browser\scripts\bootstrap.ps1
           & (Join-Path $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR "browser-cli.exe") version
