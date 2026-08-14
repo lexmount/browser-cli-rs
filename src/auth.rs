@@ -17,7 +17,9 @@ use url::Url;
 use crate::{Error, Result};
 
 pub const DEFAULT_CONNECT_BASE_URL: &str = "https://browser.lexmount.cn";
+pub const DEFAULT_CLIENT_NAME: &str = "Agent";
 pub const DEFAULT_SCOPES: &[&str] = &["browser:sessions", "browser:contexts", "browser:actions"];
+const LOGIN_SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Lexmount connected</title><h1>Lexmount connected</h1><p>You can close this window and return to your agent.</p>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
@@ -144,6 +146,24 @@ pub fn login(
     open_browser: bool,
     path: Option<&Path>,
 ) -> Result<Value> {
+    login_with_client_name(
+        project_id,
+        DEFAULT_CLIENT_NAME,
+        connect_base_url,
+        timeout,
+        open_browser,
+        path,
+    )
+}
+
+pub fn login_with_client_name(
+    project_id: Option<&str>,
+    client_name: &str,
+    connect_base_url: &str,
+    timeout: Duration,
+    open_browser: bool,
+    path: Option<&Path>,
+) -> Result<Value> {
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let redirect_uri = format!(
@@ -153,32 +173,14 @@ pub fn login(
     let verifier = random_urlsafe(32);
     let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
     let state = random_urlsafe(24);
-    let scopes = DEFAULT_SCOPES
-        .iter()
-        .map(|v| (*v).to_owned())
-        .collect::<Vec<_>>();
-
-    let mut url = Url::parse(&format!(
-        "{}/connect/codex",
-        connect_base_url.trim_end_matches('/')
-    ))
-    .map_err(|e| Error::Config(format!("invalid connect base URL: {e}")))?;
-    {
-        let mut q = url.query_pairs_mut();
-        q.append_pair("source", "browser-cli")
-            .append_pair("intent", "agent-browser-control")
-            .append_pair("response", "code")
-            .append_pair("expires_in", "7d")
-            .append_pair("scope", &scopes.join(" "))
-            .append_pair("redirect_uri", &redirect_uri)
-            .append_pair("state", &state)
-            .append_pair("code_challenge", &challenge)
-            .append_pair("code_challenge_method", "S256")
-            .append_pair("client_name", "WorkBuddy");
-        if let Some(project_id) = project_id {
-            q.append_pair("project_id", project_id);
-        }
-    }
+    let url = authorization_url(
+        project_id,
+        client_name,
+        connect_base_url,
+        &redirect_uri,
+        &state,
+        &challenge,
+    )?;
     if open_browser {
         open::that(url.as_str()).map_err(|e| Error::Io(std::io::Error::other(e)))?;
     }
@@ -198,13 +200,12 @@ pub fn login(
                     .ok_or_else(|| Error::Config("invalid OAuth callback request".into()))?;
                 let callback = Url::parse(&format!("http://127.0.0.1{target}"))
                     .map_err(|e| Error::Config(format!("invalid OAuth callback: {e}")))?;
-                let body = b"<!doctype html><meta charset=utf-8><title>Lexmount connected</title><h1>Lexmount connected</h1><p>You can return to WorkBuddy.</p>";
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
+                    LOGIN_SUCCESS_PAGE.len()
                 )?;
-                stream.write_all(body)?;
+                stream.write_all(LOGIN_SUCCESS_PAGE.as_bytes())?;
                 break callback;
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && started.elapsed() < timeout => {
@@ -272,6 +273,39 @@ pub fn login(
     )
 }
 
+fn authorization_url(
+    project_id: Option<&str>,
+    client_name: &str,
+    connect_base_url: &str,
+    redirect_uri: &str,
+    state: &str,
+    challenge: &str,
+) -> Result<Url> {
+    let scopes = DEFAULT_SCOPES.join(" ");
+    let mut url = Url::parse(&format!(
+        "{}/connect/codex",
+        connect_base_url.trim_end_matches('/')
+    ))
+    .map_err(|e| Error::Config(format!("invalid connect base URL: {e}")))?;
+    {
+        let mut q = url.query_pairs_mut();
+        q.append_pair("source", "browser-cli")
+            .append_pair("intent", "agent-browser-control")
+            .append_pair("response", "code")
+            .append_pair("expires_in", "7d")
+            .append_pair("scope", &scopes)
+            .append_pair("redirect_uri", redirect_uri)
+            .append_pair("state", state)
+            .append_pair("code_challenge", challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("client_name", client_name);
+        if let Some(project_id) = project_id {
+            q.append_pair("project_id", project_id);
+        }
+    }
+    Ok(url)
+}
+
 fn random_urlsafe(size: usize) -> String {
     let mut bytes = vec![0_u8; size];
     rand::rng().fill_bytes(&mut bytes);
@@ -330,7 +364,7 @@ fn extract_api_key(payload: &Value) -> Option<Credentials> {
                     .or_else(|| value.get("expiresAt"))
                     .and_then(Value::as_str)
                     .map(str::to_owned),
-                source: Some("connect_from_workbuddy".into()),
+                source: Some("connect_from_browser_cli".into()),
                 connect_base_url: Some(DEFAULT_CONNECT_BASE_URL.into()),
                 created_at: None,
             });
@@ -352,12 +386,62 @@ fn is_internal_api_base_url(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn extracts_nested_credentials_without_leaking_secret() {
         let c = extract_api_key(&json!({"credential":{"projectId":"p1","apiKey":"secret","apiBaseUrl":"https://api.example","scope":"browser:sessions browser:actions"}})).unwrap();
         assert_eq!(c.project_id, "p1");
         assert_eq!(c.api_key, "secret");
         assert_eq!(c.scopes.len(), 2);
+        assert_eq!(c.source.as_deref(), Some("connect_from_browser_cli"));
+    }
+
+    #[test]
+    fn authorization_url_encodes_custom_client_name() {
+        let client_name = "Claude Desktop 中文";
+        let url = authorization_url(
+            Some("project-1"),
+            client_name,
+            "https://browser.example/",
+            "http://127.0.0.1:1234/callback",
+            "state",
+            "challenge",
+        )
+        .unwrap();
+
+        assert!(
+            url.as_str()
+                .contains("client_name=Claude+Desktop+%E4%B8%AD%E6%96%87")
+        );
+        assert_eq!(
+            url.query_pairs()
+                .find(|(key, _)| key.as_ref() == "client_name")
+                .map(|(_, value)| value.into_owned())
+                .as_deref(),
+            Some(client_name)
+        );
+    }
+
+    #[test]
+    fn login_success_page_is_agent_agnostic() {
+        assert!(
+            !LOGIN_SUCCESS_PAGE
+                .to_ascii_lowercase()
+                .contains("workbuddy")
+        );
+        assert!(LOGIN_SUCCESS_PAGE.contains("return to your agent"));
+    }
+
+    #[test]
+    fn legacy_login_api_signature_is_preserved() {
+        type LegacyLogin = for<'a, 'b, 'c> fn(
+            Option<&'a str>,
+            &'b str,
+            Duration,
+            bool,
+            Option<&'c Path>,
+        ) -> Result<Value>;
+        let _: LegacyLogin = login;
     }
 
     #[test]

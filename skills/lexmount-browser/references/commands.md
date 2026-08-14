@@ -1,11 +1,13 @@
 # Command reference
 
 Every command returns a JSON object with `ok` and either `data` or `error`.
+The examples use `browser-cli` as shorthand for the Skill-local binary resolved
+from the directory containing `SKILL.md`; invoke that binary by its absolute path.
 
 ```text
 browser-cli doctor
 browser-cli auth status
-browser-cli auth login
+browser-cli auth login [--client-name "NAME"]
 
 browser-cli session create [--browser-mode normal|light]
   [--context-id ID --context-mode read_write|read_only]
