@@ -5,10 +5,14 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 # Lexmount Browser
 
-Resolve `<skill-root>` to the directory containing this loaded `SKILL.md`. Use the
-absolute source path supplied by the current Agent or its Skill registry; do not
-infer it from the working directory. In WorkBuddy, `${CODEBUDDY_SKILL_DIR}` may
-be used as `<skill-root>` for compatibility.
+Resolve `<skill-root>` to the directory containing this loaded `SKILL.md` with
+the current Agent's Skill locator:
+
+- Codex: use the absolute `SKILL.md` source path supplied in the Skill metadata.
+- Claude Code: use `${CLAUDE_SKILL_DIR}`.
+- WorkBuddy/CodeBuddy: use `${CODEBUDDY_SKILL_DIR}`.
+
+Do not infer `<skill-root>` from the working directory.
 
 Select the native Rust binary for the current platform:
 
@@ -16,9 +20,9 @@ Select the native Rust binary for the current platform:
 - Windows x64: run `& "<skill-root>\scripts\bootstrap.ps1"` in PowerShell when `<skill-root>\bin\browser-cli.exe` is missing, then invoke `& "<skill-root>\bin\browser-cli.exe"`.
 
 Both bootstrap scripts download the fixed release version from Tencent Cloud COS and verify its SHA-256 digest.
-The bootstrap and doctor scripts locate the Skill directory from their own file
-location, so they do not require `CODEBUDDY_SKILL_DIR` or another Agent-specific
-environment variable.
+The Agent-specific locator is needed to form the initial absolute command. Once
+started, the bootstrap and doctor scripts locate the Skill directory from their
+own file location.
 
 Do not run the binary for the other platform. Both platform binaries emit JSON. The examples below abbreviate the selected absolute path as `browser-cli`; resolve it before running commands and do not assume it is on `PATH`.
 

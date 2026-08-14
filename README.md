@@ -38,9 +38,11 @@ release from Tencent Cloud COS and verifies its SHA-256 digest. Set
 when testing a different published release or mirror.
 
 Agents resolve bundled scripts and binaries from the directory containing the
-loaded `SKILL.md`; the scripts also locate that directory from their own path.
-WorkBuddy may continue to expose `CODEBUDDY_SKILL_DIR` as a compatibility alias,
-but the Skill does not require an Agent-specific environment variable.
+loaded `SKILL.md`: Codex uses the absolute source path supplied in the Skill
+metadata, Claude Code uses `${CLAUDE_SKILL_DIR}`, and WorkBuddy/CodeBuddy uses
+`${CODEBUDDY_SKILL_DIR}`. These are host-level Skill locators, not installation
+or download inputs. Once started, the bootstrap and doctor scripts also locate
+the Skill directory from their own path.
 
 Published binaries are intentionally limited to two targets: macOS arm64 and
 Windows x64. The macOS binary is signed with a Developer ID Application
