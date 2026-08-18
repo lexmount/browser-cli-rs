@@ -48,6 +48,8 @@ enum AuthCommand {
     Login {
         #[arg(long)]
         project_id: Option<String>,
+        #[arg(long, default_value = auth::DEFAULT_CLIENT_NAME)]
+        client_name: String,
         #[arg(long, default_value = auth::DEFAULT_CONNECT_BASE_URL)]
         connect_base_url: String,
         #[arg(long, default_value_t = 300)]
@@ -313,12 +315,14 @@ fn run_auth(command: AuthCommand) -> Result<Value> {
         AuthCommand::Status => Ok(serde_json::to_value(auth::status(None)?)?),
         AuthCommand::Login {
             project_id,
+            client_name,
             connect_base_url,
             timeout_seconds,
             no_open,
             credentials_file,
-        } => auth::login(
+        } => auth::login_with_client_name(
             project_id.as_deref(),
+            &client_name,
             &connect_base_url,
             Duration::from_secs(timeout_seconds),
             !no_open,
@@ -566,4 +570,42 @@ fn error_kind(error: &Error) -> &'static str {
 }
 fn print_json<T: Serialize>(value: &T) {
     println!("{}", serde_json::to_string(value).unwrap());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auth_login_defaults_client_name_to_agent() {
+        let cli = Cli::try_parse_from(["browser-cli", "auth", "login"]).unwrap();
+        let Command::Auth {
+            command: AuthCommand::Login { client_name, .. },
+        } = cli.command
+        else {
+            panic!("expected auth login command");
+        };
+
+        assert_eq!(client_name, auth::DEFAULT_CLIENT_NAME);
+    }
+
+    #[test]
+    fn auth_login_parses_custom_client_name() {
+        let client_name = "Claude Desktop 中文";
+        let cli =
+            Cli::try_parse_from(["browser-cli", "auth", "login", "--client-name", client_name])
+                .unwrap();
+        let Command::Auth {
+            command:
+                AuthCommand::Login {
+                    client_name: parsed,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected auth login command");
+        };
+
+        assert_eq!(parsed, client_name);
+    }
 }

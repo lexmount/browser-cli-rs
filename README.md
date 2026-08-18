@@ -14,13 +14,15 @@ cargo build --release
 Configuration is loaded from `LEXMOUNT_API_KEY`, `LEXMOUNT_PROJECT_ID`, optional
 `LEXMOUNT_BASE_URL` (default `https://api.lexmount.cn`), and optional
 `LEXMOUNT_REGION`. `browser-cli auth login` uses a loopback callback and PKCE;
-credentials are stored at `~/.config/lexmount/browser-cli/credentials.json` with
-mode `0600` on Unix and are never printed.
+pass `--client-name "<name>"` to identify the calling Agent in the approval page,
+or omit it to use `Agent`. Credentials are stored at
+`~/.config/lexmount/browser-cli/credentials.json` with mode `0600` on Unix and
+are never printed.
 
 All commands emit one JSON document. Run `browser-cli --help` for the complete
 surface.
 
-## WorkBuddy package
+## Agent Skill package
 
 The publishable Skill is in `skills/lexmount-browser`. Build a deterministic ZIP:
 
@@ -34,6 +36,13 @@ the Skill ZIP. On first use, the matching bootstrap script downloads the pinned
 release from Tencent Cloud COS and verifies its SHA-256 digest. Set
 `LEXMOUNT_BROWSER_CLI_VERSION` or `LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL` only
 when testing a different published release or mirror.
+
+Agents resolve bundled scripts and binaries from the directory containing the
+loaded `SKILL.md`: Codex uses the absolute source path supplied in the Skill
+metadata, Claude Code uses `${CLAUDE_SKILL_DIR}`, and WorkBuddy/CodeBuddy uses
+`${CODEBUDDY_SKILL_DIR}`. These are host-level Skill locators, not installation
+or download inputs. Once started, the bootstrap and doctor scripts also locate
+the Skill directory from their own path.
 
 Published binaries are intentionally limited to two targets: macOS arm64 and
 Windows x64. The macOS binary is signed with a Developer ID Application

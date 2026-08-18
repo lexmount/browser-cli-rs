@@ -5,20 +5,32 @@ description: Use Lexmount cloud browsers to open and interact with JavaScript-he
 
 # Lexmount Browser
 
+Resolve `<skill-root>` to the directory containing this loaded `SKILL.md` with
+the current Agent's Skill locator:
+
+- Codex: use the absolute `SKILL.md` source path supplied in the Skill metadata.
+- Claude Code: use `${CLAUDE_SKILL_DIR}`.
+- WorkBuddy/CodeBuddy: use `${CODEBUDDY_SKILL_DIR}`.
+
+Do not infer `<skill-root>` from the working directory.
+
 Select the native Rust binary for the current platform:
 
-- macOS arm64: run `${CODEBUDDY_SKILL_DIR}/scripts/bootstrap.sh` when `${CODEBUDDY_SKILL_DIR}/bin/browser-cli` is missing, then use that file.
-- Windows x64: run `${CODEBUDDY_SKILL_DIR}/scripts/bootstrap.ps1` when `${CODEBUDDY_SKILL_DIR}/bin/browser-cli.exe` is missing, then use that file.
+- macOS arm64: run `sh "<skill-root>/scripts/bootstrap.sh"` when `<skill-root>/bin/browser-cli` is missing, then invoke `"<skill-root>/bin/browser-cli"`.
+- Windows x64: run `& "<skill-root>\scripts\bootstrap.ps1"` in PowerShell when `<skill-root>\bin\browser-cli.exe` is missing, then invoke `& "<skill-root>\bin\browser-cli.exe"`.
 
 Both bootstrap scripts download the fixed release version from Tencent Cloud COS and verify its SHA-256 digest.
+The Agent-specific locator is needed to form the initial absolute command. Once
+started, the bootstrap and doctor scripts locate the Skill directory from their
+own file location.
 
-Do not run the binary for the other platform. Both platform binaries emit JSON. The examples below abbreviate the selected path as `browser-cli`; resolve it before running commands.
+Do not run the binary for the other platform. Both platform binaries emit JSON. The examples below abbreviate the selected absolute path as `browser-cli`; resolve it before running commands and do not assume it is on `PATH`.
 
 ## Setup
 
-1. On macOS arm64, run `bootstrap.sh` if `bin/browser-cli` is missing, then run `doctor.sh`.
-2. On Windows x64, run `bootstrap.ps1` if `bin/browser-cli.exe` is missing, then run `doctor.ps1`.
-3. If credentials are missing, run `browser-cli auth login`. Let the user approve in their browser. Never ask them to paste an API key into chat.
+1. Resolve `<skill-root>` from this `SKILL.md` and select the matching platform paths above.
+2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on macOS arm64 or `& "<skill-root>\scripts\doctor.ps1"` in Windows PowerShell.
+3. If credentials are missing, run `browser-cli auth login`. Pass `--client-name "<agent-name>"` when the current Agent has a user-facing name; otherwise the CLI uses `Agent`. Let the user approve in their browser. Never ask them to paste an API key into chat.
 4. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
 
 Read [authentication.md](references/authentication.md) only when login or credentials fail. Read [commands.md](references/commands.md) when selecting commands. Read [troubleshooting.md](references/troubleshooting.md) only after an error.
