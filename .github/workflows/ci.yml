@@ -27,6 +27,8 @@ jobs:
           grep -q 'environment: cos-release' .github/workflows/release.yml
           grep -q './scripts/upload-release-to-cos.sh cos-upload browser-cli' .github/workflows/release.yml
           grep -q 'needs: \[build-linux, build-macos, build-windows\]' .github/workflows/release.yml
+          grep -q 'git merge-base --is-ancestor' .github/workflows/release.yml
+          grep -q 'test "${GITHUB_REF_NAME}" = "v${version}"' .github/workflows/release.yml
           ! grep -q 'skills/lexmount-browser/bin/' .github/workflows/release.yml
       - run: bash -n scripts/sign_and_notarize_macos.sh scripts/upload-release-to-cos.sh
       - run: sh -n scripts/package-skill.sh skills/lexmount-browser/scripts/bootstrap.sh skills/lexmount-browser/scripts/doctor.sh
