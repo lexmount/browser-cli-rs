@@ -9,15 +9,23 @@ permissions:
 
 jobs:
   build-macos:
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-14
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     environment: macos-release
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-apple-darwin
+          targets: ${{ matrix.target }}
       - run: cargo test --locked
-      - run: cargo build --release --locked --target aarch64-apple-darwin
+      - run: cargo build --release --locked --target '${{ matrix.target }}'
       - name: Sign and notarize
         env:
           MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64: ${{ secrets.MACOS_DEVELOPER_ID_APPLICATION_P12_BASE64 }}
@@ -25,17 +33,49 @@ jobs:
           APPLE_NOTARY_APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
           APPLE_NOTARY_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
           APPLE_NOTARY_APP_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
-        run: ./scripts/sign_and_notarize_macos.sh target/aarch64-apple-darwin/release/browser-cli
+        run: ./scripts/sign_and_notarize_macos.sh 'target/${{ matrix.target }}/release/browser-cli'
       - name: Package
         run: |
           version="${GITHUB_REF_NAME#v}"
-          asset="browser-cli-v${version}-aarch64-apple-darwin"
-          cp target/aarch64-apple-darwin/release/browser-cli "$asset"
+          asset="browser-cli-v${version}-${{ matrix.target }}"
+          cp 'target/${{ matrix.target }}/release/browser-cli' "$asset"
+          "./$asset" version
           shasum -a 256 "$asset" > "$asset.sha256"
       - uses: actions/upload-artifact@v4
         with:
-          name: release-aarch64-apple-darwin
-          path: browser-cli-v*-aarch64-apple-darwin*
+          name: release-${{ matrix.target }}
+          path: browser-cli-v*-${{ matrix.target }}*
+
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - run: cargo test --locked
+      - name: Build static Linux binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="browser-cli-v${version}-x86_64-unknown-linux-musl"
+          cp target/x86_64-unknown-linux-musl/release/browser-cli "$asset"
+          chmod 755 "$asset"
+          if readelf --program-headers --wide "$asset" | grep -F 'Requesting program interpreter'; then
+            echo 'Linux release binary is dynamically linked' >&2
+            exit 1
+          fi
+          "./$asset" version
+          sha256sum "$asset" > "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-x86_64-unknown-linux-musl
+          path: browser-cli-v*-x86_64-unknown-linux-musl*
 
   build-windows:
     runs-on: windows-latest
@@ -52,6 +92,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           asset="browser-cli-v${version}-x86_64-pc-windows-msvc.exe"
           cp target/x86_64-pc-windows-msvc/release/browser-cli.exe "$asset"
+          "./$asset" version
           sha256sum "$asset" > "$asset.sha256"
       - uses: actions/upload-artifact@v4
         with:
@@ -59,7 +100,7 @@ jobs:
           path: browser-cli-v*-x86_64-pc-windows-msvc*
 
   publish:
-    needs: [build-macos, build-windows]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: cos-release
@@ -89,7 +130,9 @@ jobs:
           mkdir cos-upload
           cp \
             "browser-cli-v${version}-aarch64-apple-darwin" \
+            "browser-cli-v${version}-x86_64-apple-darwin" \
             "browser-cli-v${version}-x86_64-pc-windows-msvc.exe" \
+            "browser-cli-v${version}-x86_64-unknown-linux-musl" \
             cos-upload/
           (cd cos-upload && sha256sum browser-cli-v* | sort -k2 > SHA256SUMS)
           ./scripts/upload-release-to-cos.sh cos-upload browser-cli "${version}"
