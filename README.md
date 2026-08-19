@@ -44,11 +44,10 @@ metadata, Claude Code uses `${CLAUDE_SKILL_DIR}`, and WorkBuddy/CodeBuddy uses
 or download inputs. Once started, the bootstrap and doctor scripts also locate
 the Skill directory from their own path.
 
-Published binaries are intentionally limited to two targets: macOS arm64 and
-Windows x64. The macOS binary is signed with a Developer ID Application
-certificate, hardened-runtime enabled, and accepted by Apple's notarization
-service before it is published. Linux and macOS Intel remain unsupported
-release platforms.
+Published binaries include macOS arm64, Windows x64, and static Linux x64. The
+macOS binary is signed with a Developer ID Application certificate,
+hardened-runtime enabled, and accepted by Apple's notarization service before
+it is published. macOS Intel remains an unsupported release platform.
 
 The release workflow reads the signing certificate and notarization credentials
 from the `macos-release` GitHub environment. It requires
@@ -56,7 +55,7 @@ from the `macos-release` GitHub environment. It requires
 `MACOS_DEVELOPER_ID_P12_PASSWORD`, `APPLE_NOTARY_APPLE_ID`,
 `APPLE_NOTARY_TEAM_ID`, and `APPLE_NOTARY_APP_PASSWORD`.
 
-The publish job uploads both platform binaries and their checksum manifest to
+The publish job uploads all three platform binaries and their checksum manifest to
 Tencent Cloud COS through the `cos-release` GitHub environment. It requires
 `TENCENT_CLOUD_SECRET_ID` and `TENCENT_CLOUD_SECRET_KEY` secrets plus
 `COS_BUCKET`, `COS_REGION`, `COS_PUBLIC_BASE_URL`, and `COS_OBJECT_PREFIX`

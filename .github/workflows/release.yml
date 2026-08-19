@@ -37,6 +37,37 @@ jobs:
           name: release-aarch64-apple-darwin
           path: browser-cli-v*-aarch64-apple-darwin*
 
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - run: cargo test --locked
+      - name: Build static Linux binary
+        env:
+          CC_x86_64_unknown_linux_musl: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+      - name: Package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          asset="browser-cli-v${version}-x86_64-unknown-linux-musl"
+          cp target/x86_64-unknown-linux-musl/release/browser-cli "$asset"
+          chmod 755 "$asset"
+          if readelf --program-headers --wide "$asset" | grep -F 'Requesting program interpreter'; then
+            echo 'Linux release binary is dynamically linked' >&2
+            exit 1
+          fi
+          "./$asset" version
+          sha256sum "$asset" > "$asset.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-x86_64-unknown-linux-musl
+          path: browser-cli-v*-x86_64-unknown-linux-musl*
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -59,7 +90,7 @@ jobs:
           path: browser-cli-v*-x86_64-pc-windows-msvc*
 
   publish:
-    needs: [build-macos, build-windows]
+    needs: [build-linux, build-macos, build-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: cos-release
@@ -89,6 +120,7 @@ jobs:
           mkdir cos-upload
           cp \
             "browser-cli-v${version}-aarch64-apple-darwin" \
+            "browser-cli-v${version}-x86_64-unknown-linux-musl" \
             "browser-cli-v${version}-x86_64-pc-windows-msvc.exe" \
             cos-upload/
           (cd cos-upload && sha256sum browser-cli-v* | sort -k2 > SHA256SUMS)
