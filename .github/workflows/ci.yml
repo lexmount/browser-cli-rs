@@ -76,9 +76,11 @@ jobs:
         shell: powershell
         run: |
           if ($PSVersionTable.PSVersion.Major -ne 5) { throw "Expected Windows PowerShell 5.1" }
-          $latestTag = git tag --list "v*" --sort=-version:refname | Select-Object -First 1
-          if (-not $latestTag) { throw "No published version tag found" }
-          $env:LEXMOUNT_BROWSER_CLI_VERSION = $latestTag.TrimStart('v')
+          # The current release tag may exist before its COS assets are uploaded.
+          # Bootstrap against the previous published tag to avoid that race.
+          $publishedTag = git tag --list "v*" --sort=-version:refname | Select-Object -Skip 1 -First 1
+          if (-not $publishedTag) { throw "No previous published version tag found" }
+          $env:LEXMOUNT_BROWSER_CLI_VERSION = $publishedTag.TrimStart('v')
           $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR = Join-Path $env:RUNNER_TEMP "browser-cli-bootstrap"
           & .\skills\lexmount-browser\scripts\bootstrap.ps1
           & (Join-Path $env:LEXMOUNT_BROWSER_CLI_INSTALL_DIR "browser-cli.exe") version
