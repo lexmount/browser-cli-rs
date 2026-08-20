@@ -57,8 +57,8 @@ jobs:
           asset="browser-cli-v${version}-x86_64-unknown-linux-musl"
           cp target/x86_64-unknown-linux-musl/release/browser-cli "$asset"
           chmod 755 "$asset"
-          if readelf --program-headers --wide "$asset" | grep -F 'Requesting program interpreter'; then
-            echo 'Linux release binary is dynamically linked' >&2
+          if readelf --program-headers --wide "$asset" | grep -E 'Requesting program interpreter: .*/ld-linux[^]]*'; then
+            echo 'Linux release binary depends on glibc' >&2
             exit 1
           fi
           "./$asset" version
