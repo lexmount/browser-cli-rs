@@ -15,8 +15,10 @@ use std::{
 
 const HOME: &str = r#"<!doctype html><title>Search fixture</title>
 <input id="query"><button id="search">Search</button>
-<script>document.querySelector('#search').onclick = () => {
-  window.open('/result?q=' + encodeURIComponent(document.querySelector('#query').value), '_blank');
+<script>document.querySelector('#search').onclick = event => {
+  window.clickEvidence = {trusted: event.isTrusted, active: navigator.userActivation.isActive};
+  const popup = window.open('/result?q=' + encodeURIComponent(document.querySelector('#query').value), '_blank');
+  window.clickEvidence.opened = popup !== null;
 };</script>"#;
 
 const RESULT: &str = r#"<!doctype html><title>Result fixture</title>
@@ -70,17 +72,32 @@ impl Browser {
             http: String::new(),
         };
         let deadline = Instant::now() + Duration::from_secs(20);
+        let client = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
         loop {
             if let Ok(port_file) =
                 fs::read_to_string(browser._profile.path().join("DevToolsActivePort"))
             {
                 let mut lines = port_file.lines();
-                let port: u16 = lines.next().unwrap().parse().unwrap();
-                let path = lines.next().unwrap();
-                assert!(path.starts_with("/devtools/browser/"));
-                browser.websocket = format!("ws://127.0.0.1:{port}{path}");
-                browser.http = format!("http://127.0.0.1:{port}");
-                return browser;
+                // The file can briefly be empty/partial while Chrome starts.
+                if let (Some(port), Some(path)) = (lines.next(), lines.next())
+                    && let Ok(port) = port.parse::<u16>()
+                    && path.starts_with("/devtools/browser/")
+                {
+                    browser.websocket = format!("ws://127.0.0.1:{port}{path}");
+                    browser.http = format!("http://127.0.0.1:{port}");
+                    // Wait for the initial page too, avoiding a racing blank
+                    // target creation by Cdp::connect during browser startup.
+                    if let Ok(response) = client.get(format!("{}/json", browser.http)).send()
+                        && let Ok(targets) = response.json::<Vec<Value>>()
+                        && targets.iter().any(|t| t["type"] == "page")
+                    {
+                        return browser;
+                    }
+                }
             }
             assert!(
                 browser.process.try_wait().unwrap().is_none(),
@@ -119,6 +136,245 @@ fn pages(cdp: &mut Cdp) -> Vec<Value> {
         .filter(|v| v["type"] == "page")
         .cloned()
         .collect()
+}
+
+#[test]
+#[ignore = "requires BROWSER_CLI_TEST_CHROME pointing to a Chrome/Chromium executable"]
+fn native_click_checks_actionability_and_retains_the_original_element() {
+    if support::isolated_test(
+        "native_click_checks_actionability_and_retains_the_original_element",
+        Duration::from_secs(120),
+    ) {
+        return;
+    }
+    let chromium = std::env::var_os("BROWSER_CLI_TEST_CHROME").unwrap();
+    let browser = Browser::start(Path::new(&chromium));
+    let directory = tempfile::tempdir().unwrap();
+    let api = MockServer::start();
+    api.mock(|when, then| {
+        when.method(POST).path("/instance/session");
+        then.status(200)
+            .json_body(json!({"session_id":"browser","status":"active","ws":browser.websocket}));
+    });
+    let mut observer = Cdp::connect(&browser.websocket).unwrap();
+    let targets = pages(&mut observer);
+    let target = targets[0]["targetId"].as_str().unwrap();
+    let cases = [
+        ("<button id=target>Click</button>", "#target", None),
+        (
+            "<button id=target><span>Child</span></button>",
+            "#target",
+            None,
+        ),
+        (
+            "<div style='height:1600px'></div><button id=target>Below fold</button>",
+            "#target",
+            None,
+        ),
+        (
+            "<div style='height:80px;overflow:auto'><div style='height:800px'></div><button id=target>Nested scroll</button></div>",
+            "#target",
+            None,
+        ),
+        (
+            "<button id=target style='transform:scale(1.3)'>Transformed</button>",
+            "#target",
+            None,
+        ),
+        (
+            "<button id=target data-label='a&quot;b'>Quoted selector</button>",
+            r#"[data-label='a"b']"#,
+            None,
+        ),
+        (
+            "<fieldset disabled><legend><button id=target>Enabled first legend</button></legend></fieldset>",
+            "#target",
+            None,
+        ),
+        (
+            "<button id=target disabled>Disabled</button>",
+            "#target",
+            Some("disabled"),
+        ),
+        (
+            "<fieldset disabled><button id=target>Disabled by fieldset</button></fieldset>",
+            "#target",
+            Some("disabled"),
+        ),
+        (
+            "<button disabled><span id=target>Disabled parent button</span></button>",
+            "#target",
+            Some("disabled"),
+        ),
+        (
+            "<div inert><button id=target>Inert</button></div>",
+            "#target",
+            Some("inert"),
+        ),
+        (
+            "<div aria-disabled=true><button id=target>ARIA disabled</button></div>",
+            "#target",
+            Some("disabled"),
+        ),
+        (
+            "<button id=target hidden>Hidden</button>",
+            "#target",
+            Some("not visible"),
+        ),
+        (
+            "<button id=target style='visibility:hidden'>Invisible</button>",
+            "#target",
+            Some("not visible"),
+        ),
+        (
+            "<div hidden><button id=target>Hidden parent</button></div>",
+            "#target",
+            Some("no visible area"),
+        ),
+        (
+            "<button id=target style='pointer-events:none'>No pointer</button>",
+            "#target",
+            Some("cannot receive pointer"),
+        ),
+        (
+            "<button id=target>Covered</button><div id=overlay style='position:fixed;inset:0;z-index:99'>Overlay</div>",
+            "#target",
+            Some("covered"),
+        ),
+        (
+            "<button id=target onmouseover='this.disabled=true'>Disabled after hover</button>",
+            "#target",
+            Some("disabled"),
+        ),
+        (
+            "<button id=target onmouseover='this.replaceWith(this.cloneNode(true))'>Replaced after hover</button>",
+            "#target",
+            Some("detached"),
+        ),
+        (
+            "<button id=target onmouseover=\"this.style.transform='translateX(300px)'\">Moved after hover</button>",
+            "#target",
+            Some("moved after hover"),
+        ),
+        (
+            "<button id=target onmouseover=\"document.querySelector('#overlay').hidden=false\">Hover overlay</button><div id=overlay hidden style='position:fixed;inset:0;z-index:99'>Overlay</div>",
+            "#target",
+            Some("covered"),
+        ),
+        ("<p>No target</p>", "#target", Some("selector not found")),
+        (
+            "<button id=target>Invalid selector</button>",
+            "[",
+            Some("SyntaxError"),
+        ),
+    ];
+    for (html, selector, expected_error) in cases {
+        // Reset both document and pointer so mouseover is deterministic per case.
+        observer
+            .navigate("about:blank", Duration::from_secs(5))
+            .unwrap();
+        observer
+            .command(
+                "Input.dispatchMouseEvent",
+                json!({"type":"mouseMoved","x":0,"y":0}),
+            )
+            .unwrap();
+        observer.evaluate(&format!(
+            "document.body.innerHTML={}; window.clicks=[]; window.presses=0; document.addEventListener('pointerdown',()=>window.presses++,true); document.addEventListener('click',e=>window.clicks.push({{id:e.target.id,trusted:e.isTrusted,active:navigator.userActivation.isActive}}),true); true",
+            serde_json::to_string(html).unwrap()
+        )).unwrap();
+        let output = support::cli(
+            &api.base_url(),
+            directory.path(),
+            &[
+                "action",
+                "click",
+                "--session-id",
+                "browser",
+                "--target-id",
+                target,
+                "--selector",
+                selector,
+            ],
+        );
+        let events = observer
+            .evaluate("({clicks:window.clicks,presses:window.presses})")
+            .unwrap();
+        if let Some(expected) = expected_error {
+            assert_eq!(output.status.code(), Some(1), "{html}");
+            assert!(output.stdout.is_empty());
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"], "cdp_error");
+            assert!(
+                error["message"].as_str().unwrap().contains(expected),
+                "{html}: {error}"
+            );
+            assert_eq!(
+                events,
+                json!({"clicks":[],"presses":0}),
+                "must not click target/overlay/replacement: {html}"
+            );
+        } else {
+            assert_eq!(support::data(output), true, "{html}");
+            assert_eq!(events["presses"], 1, "{html}");
+            let clicks = events["clicks"].as_array().unwrap();
+            assert_eq!(clicks.len(), 1, "{html}");
+            assert_eq!(clicks[0]["trusted"], true, "{html}");
+            assert_eq!(clicks[0]["active"], true, "{html}");
+        }
+        assert_eq!(observer.evaluate("location.href").unwrap(), "about:blank");
+        assert_eq!(pages(&mut observer).len(), 1);
+    }
+
+    // Arbitrary evaluation stays untrusted and gains no user activation.
+    observer
+        .navigate("about:blank", Duration::from_secs(5))
+        .unwrap();
+    assert_eq!(observer.evaluate(
+        "document.body.innerHTML='<button>Test</button>'; let evidence; const b=document.querySelector('button'); b.onclick=e=>evidence={trusted:e.isTrusted,active:navigator.userActivation.isActive}; b.click(); evidence"
+    ).unwrap(), json!({"trusted":false,"active":false}));
+
+    // Same-tab navigation can destroy the remote DOM object before cleanup.
+    // It must still produce the unchanged successful click result.
+    let fixture = MockServer::start();
+    fixture.mock(|when, then| {
+        when.method(GET).path("/next");
+        then.status(200)
+            .body("<!doctype html><title>Next page</title>");
+    });
+    let next_url = fixture.url("/next");
+    observer.evaluate(&format!(
+        "document.body.innerHTML='<a id=target>Next page</a>'; document.querySelector('#target').href={}; true",
+        serde_json::to_string(&next_url).unwrap()
+    )).unwrap();
+    assert_eq!(
+        support::data(support::cli(
+            &api.base_url(),
+            directory.path(),
+            &[
+                "action",
+                "click",
+                "--session-id",
+                "browser",
+                "--target-id",
+                target,
+                "--selector",
+                "#target"
+            ]
+        )),
+        true
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pages(&mut observer)
+        .iter()
+        .any(|page| page["targetId"] == target && page["url"] == next_url)
+    {
+        assert!(
+            Instant::now() < deadline,
+            "same-page click did not navigate"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 #[test]
@@ -295,6 +551,12 @@ fn search_popup_can_be_selected_across_cli_invocations_and_closed_safely() {
         "--selector",
         "#search",
     ]);
+    // Tab count alone is insufficient: headless-shell can allow untrusted popups.
+    assert_eq!(
+        observer.evaluate("window.clickEvidence").unwrap(),
+        json!({"trusted":true,"active":true,"opened":true}),
+        "click must deliver real browser input, not HTMLElement.click()"
+    );
     let deadline = Instant::now() + Duration::from_secs(10);
     let result = loop {
         let targets = pages(&mut observer);
