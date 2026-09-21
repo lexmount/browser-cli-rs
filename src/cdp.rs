@@ -11,6 +11,7 @@ use tungstenite::Message;
 
 use crate::{Error, Result};
 
+mod click;
 mod proxy;
 
 pub struct Cdp {
@@ -160,10 +161,6 @@ impl Cdp {
             .and_then(|v| v.get("value"))
             .cloned()
             .unwrap_or(Value::Null))
-    }
-
-    pub fn click(&mut self, selector: &str) -> Result<Value> {
-        self.evaluate(&format!("(()=>{{const e=document.querySelector({});if(!e)throw new Error('selector not found');e.scrollIntoView({{block:'center'}});e.click();return true}})()", serde_json::to_string(selector)?))
     }
 
     pub fn fill(&mut self, selector: &str, value: &str) -> Result<Value> {

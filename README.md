@@ -29,8 +29,8 @@ write `{"ok":false,"error":"...","message":"..."}` to stderr and exit with
 status 1. JavaScript evaluation failures keep the `cdp_error` category, but now
 include the browser's error summary and, when provided, one-based line/column
 positions. For example, a missing selector reports `Error: selector not found`
-instead of only `Uncaught`. This also applies to actions implemented with
-evaluation, such as `click` and `fill`; it does not retry or fix the action.
+instead of only `Uncaught`. This also applies to DOM lookup/checks in `click`
+and evaluation in `fill`; it does not retry or fix the action.
 
 The summary is the first line of the exception description (up to 1024 Unicode
 characters plus a truncation marker), falling back to a primitive thrown value
@@ -86,8 +86,8 @@ automatic action retries. These changes require a new CLI release; published
 Explicit page selection is introduced in version 1.2.0. Check that the installed
 binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
 binary does not have it. The package version and both bootstrap scripts target
-1.2.3 together. Merging or building this source does not publish release assets:
-bootstrap can install 1.2.3 only after its binaries and checksums are published
+1.2.4 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.2.4 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
@@ -126,11 +126,35 @@ and inspect again when there are multiple plausible pages.
 SDK callers can use `lexmount_browser::cdp::Cdp::connect_to_target(ws_url, page_id)`.
 `Cdp::connect(ws_url)` retains its existing default behavior.
 
+### Native click input
+
+Starting in 1.2.4, `action click --selector CSS` (and SDK `Cdp::click`) scrolls
+the element into view and sends CDP `Input.dispatchMouseEvent` move/press/release
+events. This replaces JavaScript `HTMLElement.click()`, which produces an
+untrusted event without user activation and can leave `window.open()` blocked.
+It does not add a user gesture to arbitrary `action eval` expressions.
+
+Before pressing, the CLI checks that the selected element is attached, enabled,
+visible and hit-testable at a client-rectangle center inside the viewport.
+Disabled controls/ancestors, ARIA-disabled or inert ancestors, and overlays are
+rejected. It rechecks the **same DOM object and point** after hover; a replacement,
+movement away from that point, or new overlay causes a `cdp_error`, not a click on
+another element. There is no automatic retry or JavaScript-click fallback.
+These checks are not an atomic lock against later page mutations.
+
+The existing main-document CSS selector scope is unchanged: this does not add
+iframe or shadow-root traversal. `{"ok":true,"data":true}` means input was
+dispatched, **not** that the website completed the task or opened a popup. Site
+logic/browser policy can still prevent an outcome. Inspect the page/targets and
+explicitly select any new result tab as shown above; click never navigates to an
+inferred URL or automatically switches tabs. A failed command may have partially
+dispatched input; inspect state before retrying it.
+
 ### Local regression tests
 
 ```bash
 cargo test --all-targets --locked
-# Optional: use a local Chrome/Chromium executable, including chrome-headless-shell.
+# Use full Chrome/Chromium to cover popup blocking; headless-shell alone is insufficient.
 BROWSER_CLI_TEST_CHROME=/path/to/chrome cargo test --locked --test page_targets_browser -- --ignored --nocapture
 ```
 
@@ -139,6 +163,11 @@ running the same `cargo test` command. The opt-in test launches a separate
 headless profile and loopback-only fixtures; it does not use a Lexmount account,
 real websites, or an existing browser profile. The default suite exercises all
 action routes and failure/no-fallback behavior with deterministic CDP fixtures.
+CI also runs the real-browser suite with its installed full Google Chrome.
+Tests assert trusted input/user activation as well as popup creation, and cover
+scrolling, hidden/disabled/covered elements, hover changes and cleanup failures.
+Some headless-shell builds allow untrusted popups; passing there alone does not
+demonstrate the click fix.
 
 ## Agent Skill package
 
@@ -170,7 +199,7 @@ overwrite an existing release with changed binaries.
    `skills/lexmount-browser/scripts/bootstrap.ps1` and `bootstrap.sh`.
 2. Run `.github/scripts/test-release-version.ps1` with Windows PowerShell 5.1
    or PowerShell 7, then `.github/scripts/verify-release-version.ps1 -ReleaseTag
-   v1.2.3` (substitute the intended version). Complete CI and merge the PR.
+   v1.2.4` (substitute the intended version). Complete CI and merge the PR.
 3. Create the matching tag **on that merged commit**. Typing a new tag or
    release title in GitHub does not update any source version. The release
    workflow rejects inconsistent versions before building, signing or uploading.

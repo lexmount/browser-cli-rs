@@ -24,6 +24,15 @@ impl Peer {
     }
 
     fn with_exception(targets: Value, fail_attach: bool, exception: Option<Value>) -> Self {
+        Self::with_responses(targets, fail_attach, exception, vec![])
+    }
+
+    fn with_responses(
+        targets: Value,
+        fail_attach: bool,
+        exception: Option<Value>,
+        overrides: Vec<(&'static str, usize, Value)>,
+    ) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("ws://{}", listener.local_addr().unwrap());
@@ -99,8 +108,26 @@ impl Peer {
                     _ => {
                         assert!(!attached.is_empty());
                         assert_eq!(request["sessionId"], format!("attached-{attached}"));
+                        let occurrence = seen.iter().filter(|r| r["method"] == method).count();
+                        if let Some((_, _, response)) = overrides
+                            .iter()
+                            .find(|(name, count, _)| *name == method && *count == occurrence)
+                        {
+                            let mut response = response.clone();
+                            response["id"] = request["id"].clone();
+                            socket
+                                .send(Message::Text(response.to_string().into()))
+                                .unwrap();
+                            continue;
+                        }
                         match method {
-                            "Page.enable" | "Runtime.enable" => json!({}),
+                            "Page.enable"
+                            | "Runtime.enable"
+                            | "Runtime.releaseObject"
+                            | "Input.dispatchMouseEvent" => json!({}),
+                            "Runtime.callFunctionOn" => {
+                                json!({"result":{"value":{"x":100,"y":80}}})
+                            }
                             "Page.navigate" => json!({"frameId":"frame"}),
                             "Page.getFrameTree" => json!({"selectedTarget":attached}),
                             "Page.getLayoutMetrics" => {
@@ -140,7 +167,11 @@ impl Peer {
                                     }
                                     _ => json!(true),
                                 };
-                                json!({"result":{"value":value}})
+                                if request["params"]["returnByValue"] == false {
+                                    json!({"result":{"type":"object","subtype":"node","objectId":"element"}})
+                                } else {
+                                    json!({"result":{"value":value}})
+                                }
                             }
                             _ => panic!("unexpected method: {method}"),
                         }
@@ -182,6 +213,237 @@ fn two_pages() -> Value {
         {"targetId":"wanted","type":"page"},
         {"targetId":"worker","type":"service_worker"}
     ])
+}
+
+fn click_fixture(
+    overrides: Vec<(&'static str, usize, Value)>,
+) -> (std::process::Output, Vec<Value>) {
+    let directory = tempfile::tempdir().unwrap();
+    let peer = Peer::with_responses(two_pages(), false, None, overrides);
+    let server = api(&peer.url);
+    let output = support::cli(
+        &server.base_url(),
+        directory.path(),
+        &[
+            "action",
+            "click",
+            "--session-id",
+            "browser",
+            "--target-id",
+            "wanted",
+            "--selector",
+            r#"[data-name='a"b']"#,
+        ],
+    );
+    (output, peer.finish())
+}
+
+fn click_events(seen: &[Value]) -> Vec<Value> {
+    seen.iter()
+        .filter(|r| r["method"] == "Input.dispatchMouseEvent")
+        .map(|r| r["params"].clone())
+        .collect()
+}
+
+#[test]
+fn click_uses_native_input_and_rechecks_the_same_dom_object_after_hover() {
+    let (output, seen) = click_fixture(vec![]);
+    assert_eq!(support::data(output), true);
+    assert_eq!(
+        seen.iter()
+            .skip(4)
+            .map(|r| r["method"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        [
+            "Runtime.evaluate",
+            "Runtime.callFunctionOn",
+            "Input.dispatchMouseEvent",
+            "Runtime.callFunctionOn",
+            "Input.dispatchMouseEvent",
+            "Input.dispatchMouseEvent",
+            "Runtime.releaseObject"
+        ]
+    );
+    let lookup = &seen[4]["params"];
+    assert_eq!(lookup["returnByValue"], false);
+    assert!(
+        lookup["expression"]
+            .as_str()
+            .unwrap()
+            .contains(&serde_json::to_string(r#"[data-name='a"b']"#).unwrap())
+    );
+    for request in &seen {
+        assert!(request["params"].get("userGesture").is_none());
+        for field in ["expression", "functionDeclaration"] {
+            assert!(
+                !request["params"][field]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains(".click(")
+            );
+        }
+    }
+    assert_eq!(seen[5]["params"]["objectId"], "element");
+    assert_eq!(seen[5]["params"]["arguments"], json!([{"value":null}]));
+    assert_eq!(seen[7]["params"]["objectId"], "element");
+    assert_eq!(
+        seen[7]["params"]["arguments"],
+        json!([{"value":{"x":100.0,"y":80.0}}])
+    );
+    let events = click_events(&seen);
+    for (event, (kind, button, buttons, count)) in events.iter().zip([
+        ("mouseMoved", "none", 0, 0),
+        ("mousePressed", "left", 1, 1),
+        ("mouseReleased", "left", 0, 1),
+    ]) {
+        assert_eq!(
+            *event,
+            json!({"type":kind,"x":100.0,"y":80.0,"button":button,"buttons":buttons,
+            "clickCount":count,"pointerType":"mouse","modifiers":0})
+        );
+    }
+    assert_eq!(
+        seen.last().unwrap()["params"],
+        json!({"objectId":"element"})
+    );
+}
+
+#[test]
+fn click_probe_errors_release_the_object_without_pressing() {
+    for (occurrence, response, expected, expected_moves) in [
+        (
+            1,
+            json!({"result":{"result":{"value":{"x":-1,"y":80}}}}),
+            "invalid coordinates",
+            0,
+        ),
+        (
+            1,
+            json!({"result":{"result":{"value":{"x":100}}}}),
+            "invalid coordinates",
+            0,
+        ),
+        (
+            1,
+            json!({"result":{"result":{"value":{"x":"NaN","y":80}}}}),
+            "invalid coordinates",
+            0,
+        ),
+        (
+            1,
+            json!({"result":{"exceptionDetails":{"exception":{"description":"Error: covered\n    at private-stack"}}}}),
+            "Error: covered",
+            0,
+        ),
+        (
+            2,
+            json!({"result":{"exceptionDetails":{"exception":{"description":"Error: detached"}}}}),
+            "Error: detached",
+            1,
+        ),
+        (
+            2,
+            json!({"error":{"code":-32000,"message":"context destroyed"}}),
+            "context destroyed",
+            1,
+        ),
+        (
+            2,
+            json!({"result":{"result":{"value":{"x":200,"y":80}}}}),
+            "changed after hover",
+            1,
+        ),
+    ] {
+        let (output, seen) = click_fixture(vec![("Runtime.callFunctionOn", occurrence, response)]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"], "cdp_error");
+        assert!(
+            error["message"].as_str().unwrap().contains(expected),
+            "{error}"
+        );
+        assert!(!error["message"].as_str().unwrap().contains("private-stack"));
+        let events = click_events(&seen);
+        assert_eq!(events.len(), expected_moves);
+        assert!(events.iter().all(|e| e["type"] == "mouseMoved"));
+        assert_eq!(seen.last().unwrap()["method"], "Runtime.releaseObject");
+    }
+}
+
+#[test]
+fn invalid_click_object_is_rejected_before_input() {
+    for remote in [json!({"type":"undefined"}), json!({"objectId":""})] {
+        let (output, seen) = click_fixture(vec![(
+            "Runtime.evaluate",
+            1,
+            json!({"result":{"result":remote}}),
+        )]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("missing objectId"));
+        assert!(click_events(&seen).is_empty());
+        assert_eq!(seen.last().unwrap()["method"], "Runtime.evaluate");
+    }
+}
+
+#[test]
+fn click_input_errors_are_propagated_without_repeating_press() {
+    for occurrence in 1..=3 {
+        let (output, seen) = click_fixture(vec![
+            (
+                "Input.dispatchMouseEvent",
+                occurrence,
+                json!({"error":{"code":-32000,"message":"input failure"}}),
+            ),
+            (
+                "Runtime.releaseObject",
+                1,
+                json!({"error":{"code":-32000,"message":"cleanup failure"}}),
+            ),
+        ]);
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["message"], "CDP command failed: input failure");
+        let events = click_events(&seen);
+        assert_eq!(events.len(), if occurrence == 1 { 1 } else { 3 });
+        if occurrence > 1 {
+            assert_eq!(events[1]["type"], "mousePressed");
+            assert_eq!(events[2]["type"], "mouseReleased");
+        }
+        assert_eq!(seen.last().unwrap()["method"], "Runtime.releaseObject");
+    }
+}
+
+#[test]
+fn click_keeps_the_first_input_error_when_release_also_fails() {
+    let (output, seen) = click_fixture(vec![
+        (
+            "Input.dispatchMouseEvent",
+            2,
+            json!({"error":{"code":-32000,"message":"press failure"}}),
+        ),
+        (
+            "Input.dispatchMouseEvent",
+            3,
+            json!({"error":{"code":-32000,"message":"release failure"}}),
+        ),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["message"], "CDP command failed: press failure");
+    assert_eq!(click_events(&seen).len(), 3);
+}
+
+#[test]
+fn click_cleanup_failure_does_not_mask_successful_input() {
+    let (output, seen) = click_fixture(vec![(
+        "Runtime.releaseObject",
+        1,
+        json!({"error":{"code":-32000,"message":"context already destroyed"}}),
+    )]);
+    assert_eq!(support::data(output), true);
+    assert_eq!(click_events(&seen).len(), 3);
 }
 
 #[test]

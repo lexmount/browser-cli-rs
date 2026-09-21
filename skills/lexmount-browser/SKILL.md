@@ -29,9 +29,9 @@ Do not run the binary for the other platform. Both platform binaries emit JSON. 
 ## Setup
 
 1. Resolve `<skill-root>` from this `SKILL.md` and select the matching platform paths above.
-2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on macOS arm64 or `& "<skill-root>\scripts\doctor.ps1"` in Windows PowerShell.
+2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on macOS arm64. On Windows, invoke the installed binary's `doctor` command directly, not `scripts/doctor.ps1`: PowerShell uses `& "<skill-root>\bin\browser-cli.exe" doctor`; Bash/Git Bash uses `"<skill-root>/bin/browser-cli.exe" doctor` with forward slashes in the absolute path. In WorkBuddy on Windows, prefer its Bash tool when available: its PowerShell tool can return only an exit code and omit the JSON. Keep the tool's normal permissions and sandbox.
 3. If credentials are missing, run `browser-cli auth login`. Pass `--client-name "<agent-name>"` when the current Agent has a user-facing name; otherwise the CLI uses `Agent`. Let the user approve in their browser. Never ask them to paste an API key into chat.
-4. Run `browser-cli doctor` again. Continue only when `ready_for_browser_actions` is true.
+4. After changing credentials, run `browser-cli doctor` again; otherwise use the doctor result already obtained. Continue only when its actual JSON reports `ready_for_browser_actions: true`. An exit code without that JSON is not a readiness result; see [Windows diagnostic output](references/troubleshooting.md#windows-diagnostic-output).
 
 Read [authentication.md](references/authentication.md) only when login or credentials fail. Read [commands.md](references/commands.md) when selecting commands. Read [troubleshooting.md](references/troubleshooting.md) only after an error.
 
