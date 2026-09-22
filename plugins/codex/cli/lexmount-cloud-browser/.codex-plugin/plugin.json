@@ -1,0 +1,29 @@
+{
+  "name": "lexmount-cloud-browser",
+  "version": "1.1.21-dev.1",
+  "description": "使用 LexMount 云端浏览器完成网页浏览、信息提取、点击交互、表单填写及登录后的自动化任务。",
+  "author": {
+    "name": "LexMount"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "LexMount 云浏览器",
+    "shortDescription": "云端浏览器自动化：浏览、提取与交互",
+    "longDescription": "通过 LexMount 云端浏览器浏览网站、提取信息、点击交互、填写并核对表单，在用户授权后处理已登录的网站；按需截图、导出 PDF 或下载文件。根据用户目标交付信息、操作结果或文件，完成后清理临时会话。首次使用需要 LexMount 账号及服务授权，网站登录单独完成。",
+    "developerName": "LexMount",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "打开 https://example.com，告诉我页面的主要内容，并列出页面上的链接。",
+      "打开 https://www.selenium.dev/selenium/web/web-form.html，把 Text input 填成“浏览器测试”，确认填写正确，不要提交。"
+    ],
+    "composerIcon": "./assets/lexmount-icon.png",
+    "logo": "./assets/lexmount-icon.png",
+    "websiteURL": "https://browser.lexmount.cn/",
+    "privacyPolicyURL": "https://browser.lexmount.cn/privacy",
+    "termsOfServiceURL": "https://browser.lexmount.cn/terms"
+  }
+}

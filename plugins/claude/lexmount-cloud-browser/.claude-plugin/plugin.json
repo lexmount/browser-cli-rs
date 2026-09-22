@@ -1,0 +1,14 @@
+{
+  "name": "lexmount-cloud-browser",
+  "version": "1.1.18-rc.2",
+  "description": "通过 Skill 和 browser-cli 使用 LexMount 云浏览器读取网页、填写表单和截图。",
+  "author": {
+    "name": "LexMount"
+  },
+  "keywords": [
+    "browser",
+    "cloud-browser",
+    "skill",
+    "cli"
+  ]
+}
