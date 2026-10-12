@@ -276,11 +276,23 @@ impl Drop for ConnectPermit {
 
 impl Stream {
     fn open(host: String, port: u16) -> Result<Self> {
-        CONNECTING
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < MAX_STREAMS).then_some(n + 1)
-            })
-            .map_err(|_| Error::Tunnel("local connect capacity exceeded".into()))?;
+        // Keep the bounded admission compatible with both older toolchains and
+        // newer Rust versions that renamed AtomicUsize::fetch_update.
+        let mut count = CONNECTING.load(Ordering::Acquire);
+        loop {
+            if count >= MAX_STREAMS {
+                return Err(Error::Tunnel("local connect capacity exceeded".into()));
+            }
+            match CONNECTING.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => break,
+                Err(current) => count = current,
+            }
+        }
         let permit = ConnectPermit;
         let cancelled = Arc::new(AtomicBool::new(false));
         let cancel = cancelled.clone();
