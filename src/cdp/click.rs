@@ -1,11 +1,11 @@
 use serde_json::{Value, json};
 
-use super::{Cdp, javascript_exception_message};
+use super::{Cdp, PointerEvent, PointerViewport, javascript_exception_message};
 use crate::{Error, Result};
 
 // Keep the original DOM object across the hover check. Re-querying the selector
 // could silently click a replacement element installed by a mousemove handler.
-const CLICK_POINT: &str = r#"function(point) {
+const CLICK_POINT: &str = r#"function(point, observe) {
     const e = this;
     if (!e.isConnected || e.ownerDocument !== document)
         throw new Error('click target is detached');
@@ -29,9 +29,33 @@ const CLICK_POINT: &str = r#"function(point) {
     const candidates = point ? [point] : rects.map(r => ({
         x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2
     }));
+    // Observation is optional. A page may override these browser properties
+    // with throwing getters; that must never turn a valid click into failure.
+    const optionalPositive = read => {
+        try {
+            const value = read();
+            return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+        } catch (_) { return null; }
+    };
+    const optionalGeneration = () => {
+        try {
+            const value = performance.timeOrigin;
+            return typeof value === 'number' && Number.isFinite(value) && value > 0 ? String(value) : null;
+        } catch (_) { return null; }
+    };
     for (const candidate of candidates) {
         const hit = document.elementFromPoint(candidate.x, candidate.y);
-        if (hit && (hit === e || e.contains(hit))) return candidate;
+        if (hit && (hit === e || e.contains(hit))) {
+            if (!observe) return candidate;
+            return {
+                ...candidate,
+                viewport_width: optionalPositive(() => window.innerWidth),
+                viewport_height: optionalPositive(() => window.innerHeight),
+                device_scale: optionalPositive(() => window.devicePixelRatio),
+                page_scale: optionalPositive(() => window.visualViewport?.scale),
+                page_generation: optionalGeneration()
+            };
+        }
     }
     throw new Error('click target is covered or cannot receive pointer events');
 }"#;
@@ -94,7 +118,10 @@ impl Cdp {
             json!({
                 "objectId": object_id,
                 "functionDeclaration": CLICK_POINT,
-                "arguments": [{"value": point.map(|p| json!({"x":p.x,"y":p.y}))}],
+                "arguments": [
+                    {"value": point.map(|p| json!({"x":p.x,"y":p.y}))},
+                    {"value": self.pointer_observer.is_some()}
+                ],
                 "returnByValue": true
             }),
         )?;
@@ -105,25 +132,57 @@ impl Cdp {
                 .filter(|v| v.is_finite() && *v >= 0.0)
                 .ok_or_else(|| Error::Cdp("click target response has invalid coordinates".into()))
         };
-        Ok(Point {
+        let point = Point {
             x: coordinate("x")?,
             y: coordinate("y")?,
-        })
+        };
+        let positive = |name| value[name].as_f64().filter(|v| v.is_finite() && *v > 0.0);
+        self.click_viewport = PointerViewport {
+            viewport_width: positive("viewport_width"),
+            viewport_height: positive("viewport_height"),
+            device_scale: positive("device_scale"),
+            page_scale: positive("page_scale"),
+            page_generation: value["page_generation"]
+                .as_str()
+                .filter(|s| {
+                    !s.is_empty()
+                        && s.len() <= 128
+                        && s.bytes().all(|c| c.is_ascii_digit() || c == b'.')
+                })
+                .map(str::to_owned),
+        };
+        Ok(point)
     }
 
     fn mouse_event(
         &mut self,
         event: &str,
         point: Point,
-        button: &str,
+        button: &'static str,
         buttons: u8,
         count: u8,
     ) -> Result<Value> {
-        self.command(
+        let session_id = self.target_session_id.clone();
+        self.send_observed(
             "Input.dispatchMouseEvent",
             json!({"type":event, "x":point.x, "y":point.y,
                    "button":button, "buttons":buttons, "clickCount":count,
                    "pointerType":"mouse", "modifiers":0}),
+            Some(&session_id),
+            Some(PointerEvent {
+                phase: match event {
+                    "mouseMoved" => "move",
+                    "mousePressed" => "down",
+                    _ => "up",
+                },
+                x: point.x,
+                y: point.y,
+                coordinate_space: "css_viewport",
+                button,
+                buttons,
+                click_count: count,
+                viewport: self.click_viewport.clone(),
+            }),
         )
     }
 }

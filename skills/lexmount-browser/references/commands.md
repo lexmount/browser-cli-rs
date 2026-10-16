@@ -17,7 +17,7 @@ browser-cli tunnel open [--duration SECONDS]
 browser-cli tunnel status --tunnel-id TUNNEL_ID
 browser-cli tunnel close --tunnel-id TUNNEL_ID
 
-browser-cli session list [--status active]
+browser-cli session list [--status active] [--page 1] [--page-size 100]
 browser-cli session get --session-id ID
 browser-cli session targets --session-id ID
 browser-cli session keepalive --session-id ID [--duration 60]

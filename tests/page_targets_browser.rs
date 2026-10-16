@@ -9,6 +9,7 @@ use std::{
     fs,
     path::Path,
     process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -136,6 +137,125 @@ fn pages(cdp: &mut Cdp) -> Vec<Value> {
         .filter(|v| v["type"] == "page")
         .cloned()
         .collect()
+}
+
+#[test]
+#[ignore = "requires BROWSER_CLI_TEST_CHROME pointing to a Chrome/Chromium executable"]
+fn optional_pointer_metadata_getters_cannot_block_native_click() {
+    if support::isolated_test(
+        "optional_pointer_metadata_getters_cannot_block_native_click",
+        Duration::from_secs(120),
+    ) {
+        return;
+    }
+    let chromium = std::env::var_os("BROWSER_CLI_TEST_CHROME").unwrap();
+    let browser = Browser::start(Path::new(&chromium));
+    let directory = tempfile::tempdir().unwrap();
+    let api = MockServer::start();
+    api.mock(|when, then| {
+        when.method(POST).path("/instance/session");
+        then.status(200)
+            .json_body(json!({"session_id":"browser","status":"active","ws":browser.websocket}));
+    });
+    let mut cdp = Cdp::connect(&browser.websocket).unwrap();
+    let target_id = cdp.target_id().to_owned();
+    let all_metadata = [
+        "viewport_width",
+        "viewport_height",
+        "device_scale",
+        "page_scale",
+        "page_generation",
+    ];
+    let cases: Vec<(&str, &str, Vec<&str>)> = vec![
+        (
+            "visualViewport getter",
+            "Object.defineProperty(window,'visualViewport',{configurable:true,get(){throw new Error('optional viewport unavailable')}})",
+            vec!["page_scale"],
+        ),
+        (
+            "visualViewport.scale getter",
+            "Object.defineProperty(window.visualViewport,'scale',{configurable:true,get(){throw new Error('optional scale unavailable')}})",
+            vec!["page_scale"],
+        ),
+        (
+            "devicePixelRatio getter",
+            "Object.defineProperty(window,'devicePixelRatio',{configurable:true,get(){throw new Error('optional device scale unavailable')}})",
+            vec!["device_scale"],
+        ),
+        (
+            "timeOrigin getter",
+            "Object.defineProperty(performance,'timeOrigin',{configurable:true,get(){throw new Error('optional generation unavailable')}})",
+            vec!["page_generation"],
+        ),
+        (
+            "all optional getters",
+            "for(const key of ['innerWidth','innerHeight','devicePixelRatio','visualViewport'])Object.defineProperty(window,key,{configurable:true,get(){throw new Error('optional metadata unavailable')}});Object.defineProperty(performance,'timeOrigin',{configurable:true,get(){throw new Error('optional generation unavailable')}})",
+            all_metadata.to_vec(),
+        ),
+        (
+            "invalid optional values",
+            "Object.defineProperty(window,'innerWidth',{configurable:true,get(){return 'not-a-number'}});Object.defineProperty(window,'innerHeight',{configurable:true,get(){return Infinity}});Object.defineProperty(window,'devicePixelRatio',{configurable:true,get(){return 0}});Object.defineProperty(window,'visualViewport',{configurable:true,get(){return {scale:-1}}});Object.defineProperty(performance,'timeOrigin',{configurable:true,get(){return 'private-not-a-generation'}})",
+            all_metadata.to_vec(),
+        ),
+    ];
+    for (name, install_getters, missing_fields) in cases {
+        cdp.navigate("about:blank", Duration::from_secs(5)).unwrap();
+        let install_getters = install_getters
+            .replace("throw new Error", "window.optionalReads++;throw new Error")
+            .replace("return ", "window.optionalReads++;return ");
+        assert_eq!(cdp.evaluate(&format!(
+            "document.body.innerHTML='<button id=target>Click</button>';window.clicks=0;window.optionalReads=0;document.querySelector('#target').onclick=()=>window.clicks++;{install_getters};true"
+        )).unwrap(), true, "{name}");
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let observed = Arc::clone(&events);
+        cdp.set_pointer_observer(move |pointer| observed.lock().unwrap().push(pointer.clone()));
+        assert_eq!(cdp.click("#target").unwrap(), true, "{name}");
+        assert_eq!(cdp.evaluate("window.clicks").unwrap(), 1, "{name}");
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 3, "{name}");
+        for event in events.iter() {
+            assert!(event.x.is_finite() && event.x >= 0.0, "{name}");
+            assert!(event.y.is_finite() && event.y >= 0.0, "{name}");
+            let value = serde_json::to_value(event).unwrap();
+            for field in &missing_fields {
+                assert!(
+                    value[*field].is_null(),
+                    "{name}: {field} must remain unknown"
+                );
+            }
+        }
+        // The ordinary CLI path explicitly disables desktop observations.
+        // Optional getters must not affect its original click/JSON behavior.
+        let optional_reads = cdp.evaluate("window.optionalReads").unwrap();
+        assert!(
+            optional_reads.as_u64().unwrap() > 0,
+            "{name}: SDK observer must exercise getters"
+        );
+        let output = support::command(
+            &api.base_url(),
+            directory.path(),
+            &[
+                "action",
+                "click",
+                "--session-id",
+                "browser",
+                "--target-id",
+                &target_id,
+                "--selector",
+                "#target",
+            ],
+        )
+        .env("LEXMOUNT_APP_EVENTS", "off")
+        .output()
+        .unwrap();
+        assert_eq!(support::data(output), true, "{name}");
+        assert_eq!(cdp.evaluate("window.clicks").unwrap(), 2, "{name}");
+        assert_eq!(
+            cdp.evaluate("window.optionalReads").unwrap(),
+            optional_reads,
+            "{name}: events-off CLI must not read optional metadata getters"
+        );
+    }
 }
 
 #[test]

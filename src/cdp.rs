@@ -6,6 +6,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
+use serde::Serialize;
 use serde_json::{Value, json};
 use tungstenite::Message;
 
@@ -18,7 +19,36 @@ pub struct Cdp {
     socket: proxy::Socket,
     next_id: u64,
     target_session_id: String,
+    target_id: String,
     events: VecDeque<Value>,
+    pointer_observer: Option<Box<dyn Fn(&PointerEvent) + Send + Sync>>,
+    click_viewport: PointerViewport,
+}
+
+/// Metadata from the same document/viewport that resolved a click point.
+/// Missing values remain unknown; consumers must not invent a viewport size.
+#[derive(Clone, Default, Serialize)]
+pub struct PointerViewport {
+    pub viewport_width: Option<f64>,
+    pub viewport_height: Option<f64>,
+    pub device_scale: Option<f64>,
+    pub page_scale: Option<f64>,
+    pub page_generation: Option<String>,
+}
+
+/// An input command actually sent to the CDP socket, before its acknowledgement.
+/// It does not assert that a page handled the input or that a task succeeded.
+#[derive(Clone, Serialize)]
+pub struct PointerEvent {
+    pub phase: &'static str,
+    pub x: f64,
+    pub y: f64,
+    pub coordinate_space: &'static str,
+    pub button: &'static str,
+    pub buttons: u8,
+    pub click_count: u8,
+    #[serde(flatten)]
+    pub viewport: PointerViewport,
 }
 
 pub struct WaitTextOptions<'a> {
@@ -58,7 +88,10 @@ impl Cdp {
             socket,
             next_id: 1,
             target_session_id: String::new(),
+            target_id: String::new(),
             events: VecDeque::new(),
+            pointer_observer: None,
+            click_viewport: PointerViewport::default(),
         };
         let targets = client.command_root("Target.getTargets", json!({}))?;
         let target_id = select_page_target(&targets, requested_target)?;
@@ -80,9 +113,24 @@ impl Cdp {
             .and_then(Value::as_str)
             .ok_or_else(|| Error::Cdp("Target.attachToTarget response missing sessionId".into()))?
             .to_owned();
+        client.target_id = target_id;
         client.command("Page.enable", json!({}))?;
         client.command("Runtime.enable", json!({}))?;
         Ok(client)
+    }
+
+    /// The actual page target selected and attached by this connection.
+    pub fn target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    /// Observe native selector-click input without changing command results.
+    /// Observers should be quick, non-blocking and must not panic.
+    pub fn set_pointer_observer(
+        &mut self,
+        observer: impl Fn(&PointerEvent) + Send + Sync + 'static,
+    ) {
+        self.pointer_observer = Some(Box::new(observer));
     }
 
     pub fn command(&mut self, method: &str, params: Value) -> Result<Value> {
@@ -95,6 +143,16 @@ impl Cdp {
     }
 
     fn send(&mut self, method: &str, params: Value, session_id: Option<&str>) -> Result<Value> {
+        self.send_observed(method, params, session_id, None)
+    }
+
+    fn send_observed(
+        &mut self,
+        method: &str,
+        params: Value,
+        session_id: Option<&str>,
+        pointer: Option<PointerEvent>,
+    ) -> Result<Value> {
         let id = self.next_id;
         self.next_id += 1;
         let mut request = json!({"id": id, "method": method, "params": params});
@@ -103,6 +161,9 @@ impl Cdp {
         }
         self.socket
             .send(Message::Text(request.to_string().into()))?;
+        if let (Some(pointer), Some(observer)) = (pointer, &self.pointer_observer) {
+            observer(&pointer);
+        }
         loop {
             let raw = self.socket.read()?;
             if !raw.is_text() {

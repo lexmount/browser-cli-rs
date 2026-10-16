@@ -21,6 +21,11 @@ pub fn command(api: &str, directory: &Path, arguments: &[&str]) -> Command {
             directory.join("missing-credentials.json"),
         )
         .env_remove("LEXMOUNT_REGION")
+        .env_remove("LEXMOUNT_APP_EVENT_ENDPOINT")
+        .env_remove("LEXMOUNT_APP_EVENT_TOKEN")
+        .env_remove("LEXMOUNT_AGENT_RUN_ID")
+        .env("LEXMOUNT_APP_EVENTS", "off")
+        .env_remove("LEXMOUNT_APP_CONNECTION_FILE")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

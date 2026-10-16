@@ -46,6 +46,25 @@ failed still exits with status 1 even if stderr is closed and cannot report the
 error. These source changes require a new binary; updating Skill instructions
 does not change an already installed CLI.
 
+## Session list pagination
+
+`session list` reads one page. Optional positive page flags map to the existing
+v2 API's `page` and `pageSize` fields; page numbers start at 1:
+
+```bash
+browser-cli session list --status active --page 1 --page-size 100
+browser-cli session list --status active --page 2 --page-size 100
+```
+
+The result keeps the existing `data.sessions` and `data.pagination` structure.
+Use `currentPage` and `totalPages` to request further pages. Omitting either
+flag preserves that server default; an old command without page flags sends
+the same request as before. The CLI does not automatically combine pages.
+
+Rust SDK callers retain `Client::list_sessions(status)` and can opt into
+`Client::list_sessions_with_pagination(status, page, page_size)`, where the two
+page arguments are `Option<u64>` and supplied values must be greater than zero.
+
 ## Local network proxy tunnels
 
 Introduced in 1.3.0. This requires a newly built or published binary; updating the

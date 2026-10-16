@@ -245,6 +245,299 @@ fn click_events(seen: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+#[cfg(unix)]
+mod desktop_events {
+    use super::*;
+    use std::{
+        io::Read,
+        os::unix::net::{UnixListener, UnixStream},
+        path::Path,
+    };
+
+    fn bounded_read(mut stream: UnixStream) -> String {
+        stream.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(count) => {
+                    bytes.extend_from_slice(&buffer[..count]);
+                    assert!(bytes.len() <= 16 * 1024);
+                }
+                Err(e) if e.kind() == ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(1))
+                }
+                Err(e) => panic!("bounded event read: {e}"),
+            }
+            assert!(Instant::now() < deadline, "event fixture read timed out");
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+
+    fn collect(listener: UnixListener, expected: usize) -> JoinHandle<Vec<Value>> {
+        listener.set_nonblocking(true).unwrap();
+        thread::spawn(move || {
+            let mut frames = Vec::new();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while frames.len() < expected && Instant::now() < deadline {
+                let (stream, _) = match listener.accept() {
+                    Ok(connected) => connected,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(e) => panic!("event fixture accept: {e}"),
+                };
+                let frame = bounded_read(stream);
+                assert!(frame.len() <= 16 * 1024);
+                assert!(frame.ends_with('\n'));
+                assert_eq!(frame.lines().count(), 1);
+                frames.push(serde_json::from_str::<Value>(&frame).unwrap());
+            }
+            frames
+        })
+    }
+
+    fn click_with_endpoint(api: &str, directory: &Path, endpoint: &Path) -> std::process::Output {
+        support::command(
+            api,
+            directory,
+            &[
+                "action",
+                "click",
+                "--session-id",
+                "browser",
+                "--target-id",
+                "wanted",
+                "--selector",
+                "#private-selector",
+            ],
+        )
+        .env("LEXMOUNT_APP_EVENT_ENDPOINT", endpoint)
+        .env("LEXMOUNT_APP_EVENT_TOKEN", "independent-ipc-test-token")
+        .env("LEXMOUNT_AGENT_RUN_ID", "test-agent-run")
+        .env_remove("LEXMOUNT_APP_EVENTS")
+        .output()
+        .unwrap()
+    }
+
+    #[test]
+    fn cli_click_reports_real_target_and_dispatched_coordinates_without_private_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sock");
+        let collector = collect(UnixListener::bind(&path).unwrap(), 6);
+        let point = json!({"result":{"result":{"value":{
+            "x":100,"y":80,"viewport_width":1280,"viewport_height":720,
+            "device_scale":2,"page_scale":1,"page_generation":"123456789.25"
+        }}}});
+        let peer = Peer::with_responses(
+            two_pages(),
+            false,
+            None,
+            vec![
+                ("Runtime.callFunctionOn", 1, point.clone()),
+                ("Runtime.callFunctionOn", 2, point),
+            ],
+        );
+        let server = api(&peer.url);
+        let output = click_with_endpoint(&server.base_url(), directory.path(), &path);
+        assert_eq!(support::data(output), true);
+        let seen = peer.finish();
+        assert_eq!(click_events(&seen).len(), 3);
+        let frames = collector.join().unwrap();
+        assert_eq!(frames.len(), 6);
+        let events: Vec<_> = frames.iter().map(|frame| &frame["event"]).collect();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e["kind"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [
+                "command.started",
+                "command.target",
+                "pointer.move",
+                "pointer.down",
+                "pointer.up",
+                "command.finished"
+            ]
+        );
+        assert_eq!(events[0]["target_id"], Value::Null);
+        for (index, event) in events.iter().enumerate() {
+            assert_eq!(event["seq"], index + 1);
+            assert_eq!(event["operation_id"], events[0]["operation_id"]);
+            assert_eq!(
+                event["connection_ref"],
+                lexmount_browser::desktop_events::connection_ref(
+                    &server.base_url(),
+                    "local-test-project"
+                )
+                .unwrap()
+            );
+            assert_eq!(event["session_id"], "browser");
+            assert_eq!(event["run_id"], "test-agent-run");
+            if index > 0 {
+                assert_eq!(event["target_id"], "wanted");
+            }
+        }
+        for event in &events[2..5] {
+            let payload = &event["payload"];
+            assert_eq!(payload["x"], 100.0);
+            assert_eq!(payload["y"], 80.0);
+            assert_eq!(payload["coordinate_space"], "css_viewport");
+            assert_eq!(payload["viewport_width"], 1280.0);
+            assert_eq!(payload["viewport_height"], 720.0);
+            assert_eq!(payload["device_scale"], 2.0);
+            assert_eq!(payload["page_generation"], "123456789.25");
+        }
+        let serialized = serde_json::to_string(&events).unwrap();
+        for private in [
+            "private-selector",
+            "local-test-key",
+            "local-test-project",
+            "ws://",
+        ] {
+            assert!(!serialized.contains(private));
+        }
+        assert_eq!(events[5]["payload"]["outcome"], "success");
+    }
+
+    #[test]
+    fn missing_or_unread_collector_cannot_retry_or_fail_a_click() {
+        for nonreading in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("events.sock");
+            let _listener = nonreading.then(|| UnixListener::bind(&path).unwrap());
+            let peer = Peer::start(two_pages(), false);
+            let server = api(&peer.url);
+            assert_eq!(
+                support::data(click_with_endpoint(
+                    &server.base_url(),
+                    directory.path(),
+                    &path
+                )),
+                true
+            );
+            assert_eq!(click_events(&peer.finish()).len(), 3);
+        }
+    }
+
+    #[test]
+    fn connection_failure_keeps_target_unknown_and_omits_error_message() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sock");
+        let collector = collect(UnixListener::bind(&path).unwrap(), 2);
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/instance/session");
+            then.status(401)
+                .json_body(json!({"message":"private-error-url?key=secret"}));
+        });
+        let output = click_with_endpoint(&server.base_url(), directory.path(), &path);
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["ok"], false);
+        let frames = collector.join().unwrap();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0]["event"]["kind"], "command.started");
+        assert_eq!(frames[1]["event"]["kind"], "command.finished");
+        assert_eq!(frames[1]["event"]["target_id"], Value::Null);
+        assert_eq!(frames[1]["event"]["payload"]["outcome"], "error");
+        assert!(
+            !serde_json::to_string(&frames)
+                .unwrap()
+                .contains("private-error-url")
+        );
+    }
+    #[test]
+    fn cli_discovers_app_but_off_and_partial_explicit_environment_take_priority() {
+        use std::os::unix::fs::PermissionsExt;
+        for mode in ["discovered", "off", "partial", "explicit"] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+            let path = directory.path().join("events.sock");
+            let listener = UnixListener::bind(&path).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let config = directory.path().join("app-connection.json");
+            std::fs::write(
+                &config,
+                json!({"schema_version":1,"endpoint":path,
+                "token":"discovered-token","app_instance_id":"app-instance"})
+                .to_string(),
+            )
+            .unwrap();
+            std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+            let server = MockServer::start();
+            server.mock(|when, then| {
+                when.method(POST).path("/instance/session");
+                then.status(401)
+                    .json_body(json!({"message":"fixture refused"}));
+            });
+            let mut command = support::command(
+                &server.base_url(),
+                directory.path(),
+                &[
+                    "action",
+                    "eval",
+                    "--session-id",
+                    "browser",
+                    "--expression",
+                    "private-expression",
+                ],
+            );
+            command
+                .env("LEXMOUNT_APP_CONNECTION_FILE", &config)
+                .env_remove("LEXMOUNT_APP_EVENTS");
+            match mode {
+                "off" => {
+                    command.env("LEXMOUNT_APP_EVENTS", "off");
+                }
+                "partial" => {
+                    command.env("LEXMOUNT_APP_EVENT_ENDPOINT", &path);
+                }
+                "explicit" => {
+                    command
+                        .env("LEXMOUNT_APP_EVENT_ENDPOINT", &path)
+                        .env("LEXMOUNT_APP_EVENT_TOKEN", "explicit-token");
+                }
+                _ => {}
+            }
+            let output = command.output().unwrap();
+            assert!(!output.status.success());
+            assert!(output.stdout.is_empty());
+            if matches!(mode, "off" | "partial") {
+                assert!(matches!(listener.accept(), Err(e) if e.kind() == ErrorKind::WouldBlock));
+            } else {
+                for _ in 0..2 {
+                    let (stream, _) = listener.accept().unwrap();
+                    let frame = bounded_read(stream);
+                    let envelope: Value = serde_json::from_str(&frame).unwrap();
+                    assert_eq!(
+                        envelope["token"],
+                        if mode == "explicit" {
+                            "explicit-token"
+                        } else {
+                            "discovered-token"
+                        }
+                    );
+                    assert_eq!(
+                        envelope["event"]["app_instance_id"],
+                        if mode == "explicit" {
+                            Value::Null
+                        } else {
+                            json!("app-instance")
+                        }
+                    );
+                    assert!(!frame.contains("private-expression"));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn click_uses_native_input_and_rechecks_the_same_dom_object_after_hover() {
     let (output, seen) = click_fixture(vec![]);
@@ -284,11 +577,14 @@ fn click_uses_native_input_and_rechecks_the_same_dom_object_after_hover() {
         }
     }
     assert_eq!(seen[5]["params"]["objectId"], "element");
-    assert_eq!(seen[5]["params"]["arguments"], json!([{"value":null}]));
+    assert_eq!(
+        seen[5]["params"]["arguments"],
+        json!([{"value":null},{"value":false}])
+    );
     assert_eq!(seen[7]["params"]["objectId"], "element");
     assert_eq!(
         seen[7]["params"]["arguments"],
-        json!([{"value":{"x":100.0,"y":80.0}}])
+        json!([{"value":{"x":100.0,"y":80.0}},{"value":false}])
     );
     let events = click_events(&seen);
     for (event, (kind, button, buttons, count)) in events.iter().zip([

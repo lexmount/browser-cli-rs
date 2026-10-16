@@ -311,9 +311,31 @@ impl Client {
     }
 
     pub fn list_sessions(&self, status: Option<&str>) -> Result<SessionList> {
+        self.list_sessions_with_pagination(status, None, None)
+    }
+
+    /// Read one page from the existing v2 Session API. Page numbers are 1-based;
+    /// omitted values preserve the server defaults and the original request.
+    pub fn list_sessions_with_pagination(
+        &self,
+        status: Option<&str>,
+        page: Option<u64>,
+        page_size: Option<u64>,
+    ) -> Result<SessionList> {
+        if page == Some(0) || page_size == Some(0) {
+            return Err(Error::Config(
+                "session page and page size must be greater than zero".into(),
+            ));
+        }
         let mut body = json!({});
         if let Some(status) = status {
             body["status"] = Value::String(status.into());
+        }
+        if let Some(page) = page {
+            body["page"] = json!(page);
+        }
+        if let Some(page_size) = page_size {
+            body["pageSize"] = json!(page_size);
         }
         self.json(
             Method::POST,
@@ -548,6 +570,83 @@ mod tests {
         assert_eq!(session.session_id, "s1");
         assert_eq!(session.browser_mode, "normal");
         assert_eq!(session.inspect_url, None);
+    }
+
+    #[test]
+    fn session_list_keeps_legacy_request_defaults_and_omits_unspecified_page_fields() {
+        for (status, page, page_size, mut body) in [
+            (None, None, None, json!({})),
+            (Some("active"), None, None, json!({"status":"active"})),
+            (None, Some(2), None, json!({"page":2})),
+            (None, None, Some(25), json!({"pageSize":25})),
+        ] {
+            let server = MockServer::start();
+            body["region_id"] = json!("office-test");
+            let list = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/instance/v2/sessions")
+                    .json_body(body);
+                then.status(200).json_body(json!({"sessions":[]}));
+            });
+            let client = client(&server);
+            if page.is_none() && page_size.is_none() {
+                client.list_sessions(status).unwrap();
+            } else {
+                client
+                    .list_sessions_with_pagination(status, page, page_size)
+                    .unwrap();
+            }
+            list.assert_hits(1);
+        }
+    }
+
+    #[test]
+    fn session_list_pages_use_existing_page_size_field_and_preserve_server_pagination() {
+        let server = MockServer::start();
+        let mut requests = Vec::new();
+        for page in [1, 2] {
+            requests.push(server.mock(|when, then| {
+                when.method(POST).path("/instance/v2/sessions")
+                    .header("x-api-key", "test-key").header("x-project-id", "test-project")
+                    .json_body(json!({"status":"active","page":page,"pageSize":1,"region_id":"office-test"}));
+                then.status(200).json_body(json!({
+                    "sessions":[{"session_id":format!("session-{page}"),"status":"active"}],
+                    "pagination":{"currentPage":page,"pageSize":1,"totalCount":2,"totalPages":2,"activeCount":2,"closedCount":0}
+                }));
+            }));
+        }
+        let client = client(&server);
+        for page in [1, 2] {
+            let result = client
+                .list_sessions_with_pagination(Some("active"), Some(page), Some(1))
+                .unwrap();
+            assert_eq!(result.sessions[0].session_id, format!("session-{page}"));
+            assert_eq!(result.pagination.current_page, page);
+            assert_eq!(result.pagination.page_size, 1);
+            assert_eq!(result.pagination.total_pages, 2);
+            assert_eq!(result.pagination.total_count, 2);
+            assert_eq!(result.pagination.active_count, 2);
+        }
+        for request in requests {
+            request.assert_hits(1);
+        }
+    }
+
+    #[test]
+    fn zero_pagination_values_fail_before_a_request() {
+        let server = MockServer::start();
+        let unexpected = server.mock(|when, then| {
+            when.method(POST).path("/instance/v2/sessions");
+            then.status(200).json_body(json!({"sessions":[]}));
+        });
+        let client = client(&server);
+        for (page, page_size) in [(Some(0), None), (None, Some(0)), (Some(1), Some(0))] {
+            assert!(matches!(
+                client.list_sessions_with_pagination(None, page, page_size),
+                Err(Error::Config(_))
+            ));
+        }
+        unexpected.assert_hits(0);
     }
 
     #[test]

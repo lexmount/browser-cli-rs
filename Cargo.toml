@@ -31,6 +31,10 @@ thiserror = "2"
 tungstenite = { version = "0.27", default-features = false, features = ["handshake", "rustls-tls-native-roots"] }
 url = "2"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+socket2 = "0.6"
+
 [dev-dependencies]
 httpmock = "0.7"
 tempfile = "3"

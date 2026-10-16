@@ -5,10 +5,11 @@ use std::{
     time::Duration,
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use lexmount_browser::{
     Client, Error, Result, auth,
     cdp::{Cdp, WaitTextOptions},
+    desktop_events::DesktopEvents,
     models::CreateSession,
 };
 use serde_json::{Value, json};
@@ -32,6 +33,11 @@ enum Command {
         command: AuthCommand,
     },
     Doctor,
+    /// Report explicit Agent task state to the local desktop app (best effort).
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
     /// Forward cloud browser traffic through this machine's network.
     Tunnel {
         #[command(subcommand)]
@@ -52,6 +58,65 @@ enum Command {
         #[command(subcommand)]
         command: ActionCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// Report a run state; does not create, persist, pause or complete a cloud task.
+    State(AgentStateArgs),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum AgentState {
+    Running,
+    #[value(name = "needs_human")]
+    NeedsHuman,
+    Completed,
+    Failed,
+}
+
+impl AgentState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::NeedsHuman => "needs_human",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Args)]
+struct AgentStateArgs {
+    #[arg(long, value_parser = event_identifier)]
+    session_id: String,
+    #[arg(long, value_parser = event_identifier)]
+    target_id: String,
+    #[arg(long, value_parser = run_identifier)]
+    run_id: String,
+    #[arg(long, value_enum)]
+    state: AgentState,
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+    state_version: u64,
+    #[arg(long, value_parser = run_identifier, required_if_eq("state", "needs_human"))]
+    handoff_id: Option<String>,
+}
+
+fn event_identifier(value: &str) -> std::result::Result<String, String> {
+    if value.trim().is_empty() || value.len() > 1024 || value.chars().any(char::is_control) {
+        return Err(
+            "ID must be nonempty, at most 1024 bytes and contain no control characters".into(),
+        );
+    }
+    Ok(value.to_owned())
+}
+
+fn run_identifier(value: &str) -> std::result::Result<String, String> {
+    let id = event_identifier(value)?;
+    if id.len() > 128 {
+        return Err("run/handoff ID must be at most 128 bytes".into());
+    }
+    Ok(id)
 }
 
 #[derive(Subcommand)]
@@ -105,6 +170,12 @@ enum SessionCommand {
     List {
         #[arg(long)]
         status: Option<String>,
+        /// 1-based page number; omit to keep the server default.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        page: Option<u64>,
+        /// Sessions per page; omit to keep the server default.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        page_size: Option<u64>,
     },
     Close {
         #[arg(long)]
@@ -396,6 +467,7 @@ fn run(cli: Cli) -> Result<Value> {
         }
         Command::Auth { command } => run_auth(command),
         Command::Doctor => doctor(),
+        Command::Agent { command } => run_agent(command),
         Command::Tunnel { command } => {
             let client = Client::from_env()?;
             match command {
@@ -413,6 +485,36 @@ fn run(cli: Cli) -> Result<Value> {
             run_action(Client::from_env()?, command, target_id.as_deref())
         }
     }
+}
+
+fn run_agent(command: AgentCommand) -> Result<Value> {
+    let AgentCommand::State(args) = command;
+    if args.state != AgentState::NeedsHuman && args.handoff_id.is_some() {
+        return Err(Error::Config(
+            "--handoff-id is only valid with --state needs_human".into(),
+        ));
+    }
+    let client = Client::from_env()?;
+    let events = DesktopEvents::from_env_for_task(
+        client.base_url(),
+        client.project_id(),
+        &args.session_id,
+        &args.target_id,
+        &args.run_id,
+    );
+    let attempted = events.is_some_and(|events| {
+        events.task_state(
+            args.state.as_str(),
+            args.state_version,
+            args.handoff_id.as_deref(),
+        )
+    });
+    Ok(json!({
+        "session_id":args.session_id,"target_id":args.target_id,"run_id":args.run_id,
+        "state":args.state.as_str(),"state_version":args.state_version,"handoff_id":args.handoff_id,
+        "event_kind":"task.state","attempted":attempted,"delivery":"best_effort",
+        "server_persisted":false,
+    }))
 }
 
 fn run_auth(command: AuthCommand) -> Result<Value> {
@@ -493,8 +595,12 @@ fn run_session(client: Client, command: SessionCommand) -> Result<Value> {
         SessionCommand::Get { session_id } => {
             Ok(serde_json::to_value(client.get_session(&session_id)?)?)
         }
-        SessionCommand::List { status } => Ok(serde_json::to_value(
-            client.list_sessions(status.as_deref())?,
+        SessionCommand::List {
+            status,
+            page,
+            page_size,
+        } => Ok(serde_json::to_value(
+            client.list_sessions_with_pagination(status.as_deref(), page, page_size)?,
         )?),
         SessionCommand::Close { session_id } => {
             client.close_session(&session_id)?;
@@ -584,6 +690,18 @@ fn run_context(client: Client, command: ContextCommand) -> Result<Value> {
 }
 
 fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -> Result<Value> {
+    let action = match &command {
+        ActionCommand::OpenUrl { .. } => "open-url",
+        ActionCommand::Eval { .. } => "eval",
+        ActionCommand::WaitSelector { .. } => "wait-selector",
+        ActionCommand::WaitText { .. } => "wait-text",
+        ActionCommand::Click { .. } => "click",
+        ActionCommand::Fill { .. } => "fill",
+        ActionCommand::Screenshot { .. } => "screenshot",
+        ActionCommand::Pdf { .. } => "pdf",
+        ActionCommand::Snapshot { .. } => "snapshot",
+        ActionCommand::Raw { .. } => "raw",
+    };
     let session_id = match &command {
         ActionCommand::OpenUrl { session_id, .. }
         | ActionCommand::Eval { session_id, .. }
@@ -594,65 +712,80 @@ fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -
         | ActionCommand::Screenshot { session_id, .. }
         | ActionCommand::Pdf { session_id, .. }
         | ActionCommand::Snapshot { session_id }
-        | ActionCommand::Raw { session_id, .. } => session_id,
+        | ActionCommand::Raw { session_id, .. } => session_id.clone(),
     };
-    let session = client.get_session_with_ws(session_id)?;
-    let ws = session
-        .ws
-        .ok_or_else(|| Error::Cdp(format!("session {session_id} has no CDP WebSocket URL")))?;
-    let mut cdp = match target_id {
-        Some(id) => Cdp::connect_to_target(&ws, id)?,
-        None => Cdp::connect(&ws)?,
-    };
-    match command {
-        ActionCommand::OpenUrl {
-            url, timeout_ms, ..
-        } => cdp.navigate(&url, Duration::from_millis(timeout_ms)),
-        ActionCommand::Eval { expression, .. } => cdp.evaluate(&expression),
-        ActionCommand::WaitSelector {
-            selector,
-            timeout_ms,
-            ..
-        } => cdp.wait_selector(&selector, Duration::from_millis(timeout_ms)),
-        ActionCommand::WaitText {
-            text,
-            selector,
-            state,
-            exact,
-            case_sensitive,
-            include_hidden,
-            timeout_ms,
-            poll_ms,
-            ..
-        } => cdp.wait_text(WaitTextOptions {
-            text: &text,
-            selector: selector.as_deref(),
-            state: &state,
-            exact,
-            case_sensitive,
-            include_hidden,
-            timeout: Duration::from_millis(timeout_ms),
-            poll: Duration::from_millis(poll_ms),
-        }),
-        ActionCommand::Click { selector, .. } => cdp.click(&selector),
-        ActionCommand::Fill {
-            selector, value, ..
-        } => cdp.fill(&selector, &value),
-        ActionCommand::Screenshot {
-            path, full_page, ..
-        } => cdp.screenshot(&path, full_page),
-        ActionCommand::Pdf {
-            path,
-            print_background,
-            ..
-        } => cdp.pdf(&path, print_background),
-        ActionCommand::Snapshot { .. } => cdp.snapshot(),
-        ActionCommand::Raw {
-            method,
-            params_json,
-            ..
-        } => cdp.command(&method, serde_json::from_str(&params_json)?),
+    let events = DesktopEvents::from_env(client.base_url(), client.project_id(), &session_id);
+    if let Some(events) = &events {
+        events.command_started(action);
     }
+    let result = (|| {
+        let session = client.get_session_with_ws(&session_id)?;
+        let ws = session
+            .ws
+            .ok_or_else(|| Error::Cdp(format!("session {session_id} has no CDP WebSocket URL")))?;
+        let mut cdp = match target_id {
+            Some(id) => Cdp::connect_to_target(&ws, id)?,
+            None => Cdp::connect(&ws)?,
+        };
+        if let Some(events) = &events {
+            events.target_resolved(cdp.target_id());
+            let events = events.clone();
+            cdp.set_pointer_observer(move |pointer| events.pointer(pointer));
+        }
+        match command {
+            ActionCommand::OpenUrl {
+                url, timeout_ms, ..
+            } => cdp.navigate(&url, Duration::from_millis(timeout_ms)),
+            ActionCommand::Eval { expression, .. } => cdp.evaluate(&expression),
+            ActionCommand::WaitSelector {
+                selector,
+                timeout_ms,
+                ..
+            } => cdp.wait_selector(&selector, Duration::from_millis(timeout_ms)),
+            ActionCommand::WaitText {
+                text,
+                selector,
+                state,
+                exact,
+                case_sensitive,
+                include_hidden,
+                timeout_ms,
+                poll_ms,
+                ..
+            } => cdp.wait_text(WaitTextOptions {
+                text: &text,
+                selector: selector.as_deref(),
+                state: &state,
+                exact,
+                case_sensitive,
+                include_hidden,
+                timeout: Duration::from_millis(timeout_ms),
+                poll: Duration::from_millis(poll_ms),
+            }),
+            ActionCommand::Click { selector, .. } => cdp.click(&selector),
+            ActionCommand::Fill {
+                selector, value, ..
+            } => cdp.fill(&selector, &value),
+            ActionCommand::Screenshot {
+                path, full_page, ..
+            } => cdp.screenshot(&path, full_page),
+            ActionCommand::Pdf {
+                path,
+                print_background,
+                ..
+            } => cdp.pdf(&path, print_background),
+            ActionCommand::Snapshot { .. } => cdp.snapshot(),
+            ActionCommand::Raw {
+                method,
+                params_json,
+                ..
+            } => cdp.command(&method, serde_json::from_str(&params_json)?),
+        }
+    })();
+    if let Some(events) = &events {
+        events.command_finished(action, result.as_ref().err().map(error_kind));
+    }
+    result
 }
 
 fn require_yes(yes: bool, action: &str) -> Result<()> {
@@ -688,6 +821,55 @@ fn print_json(writer: &mut impl Write, value: &Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn agent_state_arguments(state: &str, version: &str) -> Vec<String> {
+        [
+            "browser-cli",
+            "agent",
+            "state",
+            "--session-id",
+            "browser",
+            "--target-id",
+            "page",
+            "--run-id",
+            "run",
+            "--state",
+            state,
+            "--state-version",
+            version,
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    }
+
+    #[test]
+    fn explicit_agent_state_requires_page_run_and_positive_version() {
+        for state in ["running", "completed", "failed"] {
+            assert!(Cli::try_parse_from(agent_state_arguments(state, "1")).is_ok());
+        }
+        assert!(Cli::try_parse_from(agent_state_arguments("running", "0")).is_err());
+        assert!(Cli::try_parse_from(agent_state_arguments("paused", "1")).is_err());
+        assert!(Cli::try_parse_from(agent_state_arguments("needs_human", "1")).is_err());
+        let mut handoff = agent_state_arguments("needs_human", "2");
+        handoff.extend(["--handoff-id".into(), "handoff-1".into()]);
+        assert!(Cli::try_parse_from(handoff).is_ok());
+        for id in ["", "  ", "line\nbreak"] {
+            let mut args = agent_state_arguments("running", "1");
+            args[6] = id.into();
+            assert!(Cli::try_parse_from(args).is_err());
+        }
+    }
+
+    #[test]
+    fn agent_handoff_identifier_cannot_be_attached_to_other_states() {
+        let mut args = agent_state_arguments("running", "1");
+        args.extend(["--handoff-id".into(), "handoff-1".into()]);
+        let Command::Agent { command } = Cli::try_parse_from(args).unwrap().command else {
+            panic!("expected agent");
+        };
+        assert!(matches!(run_agent(command), Err(Error::Config(_))));
+    }
 
     struct FailingWriter {
         kind: io::ErrorKind,
