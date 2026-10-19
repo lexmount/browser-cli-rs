@@ -16,6 +16,10 @@ use url::Url;
 
 use crate::{Error, Result};
 
+mod desktop;
+pub const DESKTOP_KEYCHAIN_SERVICE: &str = desktop::SERVICE;
+pub const DESKTOP_KEYCHAIN_ACCOUNT: &str = desktop::ACCOUNT;
+
 pub const DEFAULT_CONNECT_BASE_URL: &str = "https://browser.lexmount.cn";
 pub const DEFAULT_CLIENT_NAME: &str = "Agent";
 pub const DEFAULT_SCOPES: &[&str] = &["browser:sessions", "browser:contexts", "browser:actions"];
@@ -49,6 +53,8 @@ pub struct CredentialStatus {
     pub api_key_present: bool,
     pub api_base_url: Option<String>,
     pub scopes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<&'static str>,
 }
 
 pub fn credentials_path(override_path: Option<&Path>) -> Result<PathBuf> {
@@ -64,7 +70,28 @@ pub fn credentials_path(override_path: Option<&Path>) -> Result<PathBuf> {
 }
 
 pub fn load_credentials(path: Option<&Path>) -> Result<Option<Credentials>> {
-    let path = credentials_path(path)?;
+    let settings = desktop::Settings::from_env(path)?;
+    load_with_settings(
+        &settings,
+        &desktop::SystemReader,
+        std::time::SystemTime::now(),
+    )
+}
+
+fn load_with_settings(
+    settings: &desktop::Settings,
+    reader: &impl desktop::Reader,
+    now: std::time::SystemTime,
+) -> Result<Option<Credentials>> {
+    if settings.desktop_selected()? {
+        return desktop::read(settings, reader, now)
+            .map(Some)
+            .map_err(desktop::Failure::error);
+    }
+    load_file(settings.file())
+}
+
+fn load_file(path: &Path) -> Result<Option<Credentials>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -73,15 +100,15 @@ pub fn load_credentials(path: Option<&Path>) -> Result<Option<Credentials>> {
 }
 
 pub fn status(path: Option<&Path>) -> Result<CredentialStatus> {
-    let path = credentials_path(path)?;
+    let settings = desktop::Settings::from_env(path)?;
     let env_project = std::env::var("LEXMOUNT_PROJECT_ID").ok();
     let env_key = std::env::var("LEXMOUNT_API_KEY").ok();
-    if env_project.is_some() || env_key.is_some() {
+    if !settings.forced && path.is_none() && (env_project.is_some() || env_key.is_some()) {
         return Ok(CredentialStatus {
             present: env_project.is_some() || env_key.is_some(),
             valid: env_project.is_some() && env_key.is_some(),
             source: "environment",
-            path: path.display().to_string(),
+            path: settings.file().display().to_string(),
             project_id_present: env_project.is_some(),
             api_key_present: env_key.is_some(),
             api_base_url: Some(
@@ -89,9 +116,26 @@ pub fn status(path: Option<&Path>) -> Result<CredentialStatus> {
                     .unwrap_or_else(|_| "https://api.lexmount.cn".into()),
             ),
             scopes: vec![],
+            error_code: None,
         });
     }
-    let credentials = load_credentials(Some(&path))?;
+    if settings.desktop_selected()? {
+        if env_project.is_some()
+            || env_key.is_some()
+            || std::env::var_os("LEXMOUNT_BASE_URL").is_some()
+        {
+            return Err(Error::Config(
+                "desktop authentication conflicts with explicit identity overrides".into(),
+            ));
+        }
+        return Ok(desktop_status(
+            &settings,
+            &desktop::SystemReader,
+            std::time::SystemTime::now(),
+        ));
+    }
+    let path = settings.file();
+    let credentials = load_file(path)?;
     Ok(match credentials {
         Some(c) => CredentialStatus {
             present: true,
@@ -102,6 +146,7 @@ pub fn status(path: Option<&Path>) -> Result<CredentialStatus> {
             api_key_present: !c.api_key.is_empty(),
             api_base_url: Some(c.api_base_url),
             scopes: c.scopes,
+            error_code: None,
         },
         None => CredentialStatus {
             present: false,
@@ -112,11 +157,75 @@ pub fn status(path: Option<&Path>) -> Result<CredentialStatus> {
             api_key_present: false,
             api_base_url: None,
             scopes: vec![],
+            error_code: None,
         },
     })
 }
 
+fn desktop_status(
+    settings: &desktop::Settings,
+    reader: &impl desktop::Reader,
+    now: std::time::SystemTime,
+) -> CredentialStatus {
+    match desktop::read(settings, reader, now) {
+        Ok(c) => CredentialStatus {
+            present: true,
+            valid: true,
+            source: "desktop_keychain",
+            path: String::new(),
+            project_id_present: true,
+            api_key_present: true,
+            api_base_url: Some(c.api_base_url),
+            scopes: c.scopes,
+            error_code: None,
+        },
+        Err(failure) => CredentialStatus {
+            present: matches!(
+                failure,
+                desktop::Failure::Invalid | desktop::Failure::Expired | desktop::Failure::Mismatch
+            ),
+            valid: false,
+            source: "desktop_keychain",
+            path: String::new(),
+            project_id_present: false,
+            api_key_present: false,
+            api_base_url: None,
+            scopes: vec![],
+            error_code: Some(failure.code()),
+        },
+    }
+}
+
+fn ensure_file_account(path: Option<&Path>) -> Result<()> {
+    ensure_file_settings(&desktop::Settings::from_env(path)?)
+}
+
+fn ensure_file_settings(settings: &desktop::Settings) -> Result<()> {
+    if settings.desktop_selected()? {
+        return Err(Error::Authentication(
+            "desktop account is managed in the Lexmount application".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn client_credentials(
+    api_key: Option<String>,
+    project_id: Option<String>,
+    base_url: Option<String>,
+) -> Result<(String, String, String)> {
+    desktop::client_credentials(
+        &desktop::Settings::from_env(None)?,
+        &desktop::SystemReader,
+        api_key,
+        project_id,
+        base_url,
+        std::time::SystemTime::now(),
+    )
+}
+
 pub fn save_credentials(credentials: &Credentials, path: Option<&Path>) -> Result<PathBuf> {
+    ensure_file_account(path)?;
     let path = credentials_path(path)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -131,7 +240,12 @@ pub fn save_credentials(credentials: &Credentials, path: Option<&Path>) -> Resul
 }
 
 pub fn logout(path: Option<&Path>) -> Result<bool> {
-    let path = credentials_path(path)?;
+    logout_with_settings(&desktop::Settings::from_env(path)?)
+}
+
+fn logout_with_settings(settings: &desktop::Settings) -> Result<bool> {
+    ensure_file_settings(settings)?;
+    let path = settings.file();
     if !path.exists() {
         return Ok(false);
     }
@@ -164,6 +278,7 @@ pub fn login_with_client_name(
     open_browser: bool,
     path: Option<&Path>,
 ) -> Result<Value> {
+    ensure_file_account(path)?;
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let redirect_uri = format!(

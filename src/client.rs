@@ -15,8 +15,6 @@ use crate::{
     models::{Context, ContextList, CreateSession, Session, SessionList},
 };
 
-const DEFAULT_BASE_URL: &str = "https://api.lexmount.cn";
-
 #[derive(Debug, Clone)]
 pub struct ClientBuilder {
     api_key: Option<String>,
@@ -61,33 +59,13 @@ impl ClientBuilder {
     }
 
     pub fn build(self) -> Result<Client> {
-        let credentials = crate::auth::load_credentials(None)
-            .ok()
-            .flatten()
-            .filter(|value| {
-                value.kind == "api_key" && !value.api_key.is_empty() && !value.project_id.is_empty()
-            });
-        let api_key = self
-            .api_key
-            .or_else(|| env::var("LEXMOUNT_API_KEY").ok())
-            .or_else(|| credentials.as_ref().map(|c| c.api_key.clone()))
-            .ok_or_else(|| {
-                Error::Config("LEXMOUNT_API_KEY is not set; run `browser-cli auth login`".into())
-            })?;
-        let project_id = self
-            .project_id
-            .or_else(|| env::var("LEXMOUNT_PROJECT_ID").ok())
-            .or_else(|| credentials.as_ref().map(|c| c.project_id.clone()))
-            .ok_or_else(|| {
-                Error::Config("LEXMOUNT_PROJECT_ID is not set; run `browser-cli auth login`".into())
-            })?;
-        let base_url = self
-            .base_url
-            .or_else(|| env::var("LEXMOUNT_BASE_URL").ok())
-            .or_else(|| credentials.as_ref().map(|c| c.api_base_url.clone()))
-            .unwrap_or_else(|| DEFAULT_BASE_URL.into())
-            .trim_end_matches('/')
-            .to_owned();
+        let (api_key, project_id, base_url) = crate::auth::client_credentials(
+            self.api_key.or_else(|| env::var("LEXMOUNT_API_KEY").ok()),
+            self.project_id
+                .or_else(|| env::var("LEXMOUNT_PROJECT_ID").ok()),
+            self.base_url.or_else(|| env::var("LEXMOUNT_BASE_URL").ok()),
+        )?;
+        let base_url = base_url.trim_end_matches('/').to_owned();
         let region = self.region.or_else(|| env::var("LEXMOUNT_REGION").ok());
         let http = HttpClient::builder().timeout(self.timeout).build()?;
         Ok(Client {
