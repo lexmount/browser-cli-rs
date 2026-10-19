@@ -232,15 +232,42 @@ pub fn login_with_client_name(
                 .unwrap_or_else(|| "callback did not include an authorization code".into()),
         )
     })?;
+    let http = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    exchange_and_save_credentials(
+        &http,
+        LoginExchange {
+            requested_project_id: project_id,
+            connect_base_url,
+            code,
+            verifier: &verifier,
+            redirect_uri: &redirect_uri,
+        },
+        path,
+    )
+}
+
+struct LoginExchange<'a> {
+    requested_project_id: Option<&'a str>,
+    connect_base_url: &'a str,
+    code: &'a str,
+    verifier: &'a str,
+    redirect_uri: &'a str,
+}
+
+fn exchange_and_save_credentials(
+    http: &reqwest::blocking::Client,
+    request: LoginExchange<'_>,
+    path: Option<&Path>,
+) -> Result<Value> {
     let exchange_url = format!(
         "{}/api/connect/codex/exchange",
-        connect_base_url.trim_end_matches('/')
+        request.connect_base_url.trim_end_matches('/')
     );
-    let response = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()?
+    let response = http
         .post(&exchange_url)
-        .json(&json!({"code": code, "code_verifier": verifier, "redirect_uri": redirect_uri}))
+        .json(&json!({"code": request.code, "code_verifier": request.verifier, "redirect_uri": request.redirect_uri}))
         .send()?;
     let status = response.status();
     let payload: Value = response.json()?;
@@ -261,12 +288,20 @@ pub fn login_with_client_name(
             "credential exchange response did not include project_id and api_key".into(),
         )
     })?;
+    if request
+        .requested_project_id
+        .is_some_and(|requested| requested != credential.project_id)
+    {
+        return Err(Error::Authentication(
+            "credential exchange returned a different project than requested".into(),
+        ));
+    }
     if is_internal_api_base_url(&credential.api_base_url) {
         return Err(Error::Authentication(
             "credential exchange returned an internal API base URL".into(),
         ));
     }
-    credential.connect_base_url = Some(connect_base_url.trim_end_matches('/').to_owned());
+    credential.connect_base_url = Some(request.connect_base_url.trim_end_matches('/').to_owned());
     let saved = save_credentials(&credential, path)?;
     Ok(
         json!({"authenticated": true, "credentials_saved": true, "credentials_file": saved, "project_id": credential.project_id, "api_base_url": credential.api_base_url, "scopes": credential.scopes, "api_key_redacted": true}),
@@ -386,6 +421,110 @@ fn is_internal_api_base_url(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::{Method::POST, MockServer};
+
+    fn exchange_fixture(
+        server: &MockServer,
+        requested_project_id: Option<&str>,
+        path: &Path,
+    ) -> Result<Value> {
+        // The real HTTP exchange/save path, isolated to a loopback fixture and
+        // explicit temp credential file. Never load the user's configuration.
+        let http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap();
+        exchange_and_save_credentials(
+            &http,
+            LoginExchange {
+                requested_project_id,
+                connect_base_url: &server.base_url(),
+                code: "fixture-authorization-code",
+                verifier: "fixture-pkce-verifier",
+                redirect_uri: "http://127.0.0.1:12345/callback",
+            },
+            Some(path),
+        )
+    }
+
+    #[test]
+    fn exchange_saves_matching_explicit_project_and_keeps_unspecified_project_behavior() {
+        for requested_project in [Some("requested-project"), None] {
+            let server = MockServer::start();
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("private/credentials.json");
+            let returned_project = requested_project.unwrap_or("server-default-project");
+            let exchange = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/connect/codex/exchange")
+                    .json_body(json!({
+                        "code":"fixture-authorization-code",
+                        "code_verifier":"fixture-pkce-verifier",
+                        "redirect_uri":"http://127.0.0.1:12345/callback"
+                    }));
+                then.status(200).json_body(json!({"credential":{
+                    "projectId":returned_project,"apiKey":"fixture-exchange-key",
+                    "apiBaseUrl":"https://api.example.test","scope":"browser:sessions"
+                }}));
+            });
+            let result = exchange_fixture(&server, requested_project, &path).unwrap();
+            assert_eq!(result["authenticated"], true);
+            assert_eq!(result["credentials_saved"], true);
+            assert_eq!(result["project_id"], returned_project);
+            assert_eq!(result["api_key_redacted"], true);
+            assert!(!result.to_string().contains("fixture-exchange-key"));
+            let saved = load_credentials(Some(&path)).unwrap().unwrap();
+            assert_eq!(saved.project_id, returned_project);
+            assert_eq!(saved.scopes, ["browser:sessions"]);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                assert_eq!(
+                    fs::metadata(&path).unwrap().permissions().mode() & 0o7777,
+                    0o600
+                );
+            }
+            exchange.assert_hits(1);
+        }
+    }
+
+    #[test]
+    fn mismatched_exchange_project_never_creates_or_replaces_credentials() {
+        for existing_credentials in [false, true] {
+            let server = MockServer::start();
+            let directory = tempfile::tempdir().unwrap();
+            let parent = directory.path().join("private");
+            let path = parent.join("credentials.json");
+            let previous = b"{\"kind\":\"api_key\",\"project_id\":\"existing-project\",\"api_key\":\"fixture-existing-key\",\"api_base_url\":\"https://api.example.test\"}\n";
+            if existing_credentials {
+                fs::create_dir(&parent).unwrap();
+                fs::write(&path, previous).unwrap();
+            }
+            let exchange = server.mock(|when, then| {
+                when.method(POST)
+                    .path("/api/connect/codex/exchange")
+                    .json_body_partial(r#"{"code":"fixture-authorization-code","code_verifier":"fixture-pkce-verifier"}"#);
+                then.status(200).json_body(json!({"credentials":{
+                    "project_id":"server-default-project","api_key":"fixture-rejected-key",
+                    "api_base_url":"https://api.example.test"
+                }}));
+            });
+            let error = exchange_fixture(&server, Some("requested-project"), &path).unwrap_err();
+            assert!(matches!(error, Error::Authentication(_)));
+            assert_eq!(
+                error.to_string(),
+                "authentication failed: credential exchange returned a different project than requested"
+            );
+            if existing_credentials {
+                assert!(fs::read(&path).unwrap() == previous);
+            } else {
+                assert!(!path.exists());
+                assert!(!parent.exists());
+            }
+            exchange.assert_hits(1);
+        }
+    }
 
     #[test]
     fn extracts_nested_credentials_without_leaking_secret() {
