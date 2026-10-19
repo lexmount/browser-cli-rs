@@ -6,7 +6,7 @@ use std::{
 };
 
 use base64::{Engine, engine::general_purpose::STANDARD};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tungstenite::Message;
 
@@ -23,11 +23,12 @@ pub struct Cdp {
     events: VecDeque<Value>,
     pointer_observer: Option<Box<dyn Fn(&PointerEvent) + Send + Sync>>,
     click_viewport: PointerViewport,
+    click_target_rects: Option<Value>,
 }
 
 /// Metadata from the same document/viewport that resolved a click point.
 /// Missing values remain unknown; consumers must not invent a viewport size.
-#[derive(Clone, Default, Serialize)]
+#[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
 pub struct PointerViewport {
     pub viewport_width: Option<f64>,
     pub viewport_height: Option<f64>,
@@ -36,8 +37,19 @@ pub struct PointerViewport {
     pub page_generation: Option<String>,
 }
 
-/// An input command actually sent to the CDP socket, before its acknowledgement.
-/// It does not assert that a page handled the input or that a task succeeded.
+/// Caller-supplied previous actual input result. Movement never fabricates an origin.
+#[derive(Clone, Deserialize, Serialize)]
+pub struct PointerOrigin {
+    pub x: f64,
+    pub y: f64,
+    pub target_id: String,
+    pub coordinate_space: String,
+    #[serde(flatten)]
+    pub viewport: PointerViewport,
+}
+
+/// An input dispatch acknowledged successfully by CDP. It does not assert that
+/// a page handled the input or that the higher-level task succeeded.
 #[derive(Clone, Serialize)]
 pub struct PointerEvent {
     pub phase: &'static str,
@@ -92,6 +104,7 @@ impl Cdp {
             events: VecDeque::new(),
             pointer_observer: None,
             click_viewport: PointerViewport::default(),
+            click_target_rects: None,
         };
         let targets = client.command_root("Target.getTargets", json!({}))?;
         let target_id = select_page_target(&targets, requested_target)?;
@@ -124,7 +137,7 @@ impl Cdp {
         &self.target_id
     }
 
-    /// Observe native selector-click input without changing command results.
+    /// Observe native selector-click/move input without changing command results.
     /// Observers should be quick, non-blocking and must not panic.
     pub fn set_pointer_observer(
         &mut self,
@@ -161,9 +174,6 @@ impl Cdp {
         }
         self.socket
             .send(Message::Text(request.to_string().into()))?;
-        if let (Some(pointer), Some(observer)) = (pointer, &self.pointer_observer) {
-            observer(&pointer);
-        }
         loop {
             let raw = self.socket.read()?;
             if !raw.is_text() {
@@ -179,6 +189,9 @@ impl Cdp {
                             .unwrap_or("unknown CDP error")
                             .into(),
                     ));
+                }
+                if let (Some(pointer), Some(observer)) = (&pointer, &self.pointer_observer) {
+                    observer(pointer);
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }

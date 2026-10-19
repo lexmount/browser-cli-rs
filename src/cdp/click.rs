@@ -1,6 +1,10 @@
 use serde_json::{Value, json};
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
-use super::{Cdp, PointerEvent, PointerViewport, javascript_exception_message};
+use super::{Cdp, PointerEvent, PointerOrigin, PointerViewport, javascript_exception_message};
 use crate::{Error, Result};
 
 // Keep the original DOM object across the hover check. Re-querying the selector
@@ -49,6 +53,7 @@ const CLICK_POINT: &str = r#"function(point, observe) {
             if (!observe) return candidate;
             return {
                 ...candidate,
+                target_rects: rects,
                 viewport_width: optionalPositive(() => window.innerWidth),
                 viewport_height: optionalPositive(() => window.innerHeight),
                 device_scale: optionalPositive(() => window.devicePixelRatio),
@@ -60,7 +65,7 @@ const CLICK_POINT: &str = r#"function(point, observe) {
     throw new Error('click target is covered or cannot receive pointer events');
 }"#;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Point {
     x: f64,
     y: f64,
@@ -72,6 +77,15 @@ impl Cdp {
     /// Success means the input was dispatched, not that the site's task or
     /// navigation succeeded. No JavaScript-click fallback or tab switching occurs.
     pub fn click(&mut self, selector: &str) -> Result<Value> {
+        self.click_impl(selector, false)
+    }
+
+    /// Opt-in coordinates of this one real click; the ordinary click result stays `true`.
+    pub fn click_with_point(&mut self, selector: &str) -> Result<Value> {
+        self.click_impl(selector, true)
+    }
+
+    fn pointer_element(&mut self, selector: &str) -> Result<String> {
         let response = self.command(
             "Runtime.evaluate",
             json!({
@@ -83,24 +97,29 @@ impl Cdp {
             }),
         )?;
         let remote = runtime_result(&response)?;
-        let object_id = remote["objectId"]
+        remote["objectId"]
             .as_str()
             .filter(|id| !id.is_empty())
-            .ok_or_else(|| Error::Cdp("click target response missing objectId".into()))?;
+            .map(str::to_owned)
+            .ok_or_else(|| Error::Cdp("click target response missing objectId".into()))
+    }
 
-        let result = self.click_object(object_id);
+    fn click_impl(&mut self, selector: &str, report_point: bool) -> Result<Value> {
+        let object_id = self.pointer_element(selector)?;
+        let result = self.click_object(&object_id, report_point);
         // Navigation may already have destroyed the context. Cleanup must not
         // turn a dispatched click into failure or hide its original error.
         let _ = self.command("Runtime.releaseObject", json!({"objectId": object_id}));
         result
     }
 
-    fn click_object(&mut self, object_id: &str) -> Result<Value> {
-        let point = self.click_point(object_id, None)?;
+    fn click_object(&mut self, object_id: &str, report_point: bool) -> Result<Value> {
+        let observe = report_point || self.pointer_observer.is_some();
+        let point = self.click_point(object_id, None, observe)?;
         self.mouse_event("mouseMoved", point, "none", 0, 0)?;
         // Hover can move, cover, disable or replace the target. Never chase a
         // changed selector or blindly press at its stale coordinates.
-        if self.click_point(object_id, Some(point))? != point {
+        if self.click_point(object_id, Some(point), observe)? != point {
             return Err(Error::Cdp("click target changed after hover".into()));
         }
         let pressed = self.mouse_event("mousePressed", point, "left", 1, 1);
@@ -109,10 +128,140 @@ impl Cdp {
         let released = self.mouse_event("mouseReleased", point, "left", 0, 1);
         pressed?;
         released?;
-        Ok(json!(true))
+        Ok(if report_point {
+            self.point_result(point)
+        } else {
+            json!(true)
+        })
     }
 
-    fn click_point(&mut self, object_id: &str, point: Option<Point>) -> Result<Point> {
+    /// Move through real CDP samples from the caller's last known input point.
+    /// No press, release, JavaScript click, alternate Target or invented origin.
+    pub fn move_pointer(
+        &mut self,
+        selector: &str,
+        origin: &PointerOrigin,
+        duration: Duration,
+    ) -> Result<Value> {
+        if !origin.x.is_finite()
+            || !origin.y.is_finite()
+            || origin.target_id != self.target_id
+            || origin.coordinate_space != "css_viewport"
+            || duration < Duration::from_millis(100)
+            || duration > Duration::from_millis(2000)
+        {
+            return Err(Error::Config(
+                "move requires finite coordinates and duration 100...2000 ms".into(),
+            ));
+        }
+        let object_id = self.pointer_element(selector)?;
+        let result = self.move_object(
+            &object_id,
+            Point {
+                x: origin.x,
+                y: origin.y,
+            },
+            duration,
+            &origin.viewport,
+        );
+        let _ = self.command("Runtime.releaseObject", json!({"objectId":object_id}));
+        result
+    }
+
+    fn move_object(
+        &mut self,
+        object_id: &str,
+        from: Point,
+        duration: Duration,
+        origin_viewport: &PointerViewport,
+    ) -> Result<Value> {
+        let destination = self.click_point(object_id, None, true)?;
+        let viewport = self.click_viewport.clone();
+        let rects = self.click_target_rects.clone();
+        let width = viewport.viewport_width;
+        let height = viewport.viewport_height;
+        if width.is_none()
+            || height.is_none()
+            || viewport.device_scale.is_none()
+            || viewport.page_scale.is_none()
+            || viewport.page_generation.is_none()
+            || rects.is_none()
+        {
+            return Err(Error::Cdp(
+                "move requires known document and viewport metadata".into(),
+            ));
+        }
+        if from.x < 0.0 || from.y < 0.0 || from.x >= width.unwrap() || from.y >= height.unwrap() {
+            return Err(Error::Config(
+                "move origin must be inside the current CSS viewport".into(),
+            ));
+        }
+        if origin_viewport != &viewport {
+            return Err(Error::Cdp(
+                "move origin document or viewport no longer matches".into(),
+            ));
+        }
+        let started = Instant::now();
+        self.confirmed_move(from)?;
+        let mut steps = 1_u64;
+        loop {
+            if let Some(remaining) = duration.checked_sub(started.elapsed()) {
+                thread::sleep(remaining.min(Duration::from_micros(16_667)));
+            }
+            // Keep the original DOM object and endpoint. Hover-induced layout,
+            // navigation, overlays or viewport changes stop, never chase a new point.
+            if self.click_point(object_id, Some(destination), true)? != destination {
+                return Err(Error::Cdp("move target point changed during hover".into()));
+            }
+            if self.click_viewport != viewport {
+                return Err(Error::Cdp(
+                    "move document or viewport changed during hover".into(),
+                ));
+            }
+            if self.click_target_rects != rects {
+                return Err(Error::Cdp(
+                    "move target geometry changed during hover".into(),
+                ));
+            }
+            let progress = (started.elapsed().as_secs_f64() / duration.as_secs_f64()).min(1.0);
+            self.confirmed_move(interpolate(from, destination, progress))?;
+            steps += 1;
+            if progress >= 1.0 {
+                break;
+            }
+        }
+        self.click_point(object_id, Some(destination), true)?;
+        if self.click_viewport != viewport || self.click_target_rects != rects {
+            return Err(Error::Cdp(
+                "move document or viewport changed after hover".into(),
+            ));
+        }
+        let mut result = self.point_result(destination);
+        result["steps"] = json!(steps);
+        result["elapsed_ms"] = json!(started.elapsed().as_millis());
+        result["requested_duration_ms"] = json!(duration.as_millis());
+        Ok(result)
+    }
+
+    fn point_result(&self, point: Point) -> Value {
+        let mut value = serde_json::to_value(&self.click_viewport).unwrap_or_else(|_| json!({}));
+        value["x"] = json!(point.x);
+        value["y"] = json!(point.y);
+        value["coordinate_space"] = json!("css_viewport");
+        value["target_id"] = json!(self.target_id);
+        value
+    }
+
+    fn confirmed_move(&mut self, point: Point) -> Result<Value> {
+        self.mouse_event("mouseMoved", point, "none", 0, 0)
+    }
+
+    fn click_point(
+        &mut self,
+        object_id: &str,
+        point: Option<Point>,
+        observe: bool,
+    ) -> Result<Point> {
         let response = self.command(
             "Runtime.callFunctionOn",
             json!({
@@ -120,7 +269,7 @@ impl Cdp {
                 "functionDeclaration": CLICK_POINT,
                 "arguments": [
                     {"value": point.map(|p| json!({"x":p.x,"y":p.y}))},
-                    {"value": self.pointer_observer.is_some()}
+                    {"value": observe}
                 ],
                 "returnByValue": true
             }),
@@ -151,6 +300,19 @@ impl Cdp {
                 })
                 .map(str::to_owned),
         };
+        self.click_target_rects = value
+            .get("target_rects")
+            .filter(|rects| {
+                rects.as_array().is_some_and(|rects| {
+                    !rects.is_empty()
+                        && rects.iter().all(|rect| {
+                            ["left", "right", "top", "bottom"]
+                                .iter()
+                                .all(|key| rect[*key].as_f64().is_some_and(f64::is_finite))
+                        })
+                })
+            })
+            .cloned();
         Ok(point)
     }
 
@@ -184,6 +346,14 @@ impl Cdp {
                 viewport: self.click_viewport.clone(),
             }),
         )
+    }
+}
+
+fn interpolate(from: Point, to: Point, progress: f64) -> Point {
+    let eased = progress * progress * (3.0 - 2.0 * progress);
+    Point {
+        x: (1.0 - eased) * from.x + eased * to.x,
+        y: (1.0 - eased) * from.y + eased * to.y,
     }
 }
 

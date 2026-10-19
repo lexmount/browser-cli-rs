@@ -838,3 +838,80 @@ fn search_popup_can_be_selected_across_cli_invocations_and_closed_safely() {
         "closed_target_no_fallback":"passed","source_page_unchanged":"passed"})
     );
 }
+
+#[test]
+#[ignore = "requires BROWSER_CLI_TEST_CHROME pointing to a Chrome/Chromium executable"]
+fn real_mouse_move_is_trusted_unpressed_and_aborts_small_hover_layout_changes() {
+    if support::isolated_test(
+        "real_mouse_move_is_trusted_unpressed_and_aborts_small_hover_layout_changes",
+        Duration::from_secs(90),
+    ) {
+        return;
+    }
+    let executable = std::env::var_os("BROWSER_CLI_TEST_CHROME").unwrap();
+    let browser = Browser::start(Path::new(&executable));
+    let mut cdp = Cdp::connect(&browser.websocket).unwrap();
+    // The startup page exists before macOS headless Chrome finishes sizing its
+    // window. Pin this fixture's CSS viewport; production must still reject a
+    // real resize between an observed origin and the next move.
+    cdp.command(
+        "Emulation.setDeviceMetricsOverride",
+        json!({"width":900,"height":600,"deviceScaleFactor":1,"mobile":false}),
+    )
+    .unwrap();
+    cdp.evaluate(r#"document.body.innerHTML='<button id=start style="position:fixed;left:40px;top:70px;width:100px;height:40px">Start</button><button id=finish style="position:fixed;left:350px;top:230px;width:140px;height:50px">Finish</button>';
+      window.moves=[];window.presses=0;
+      document.addEventListener('mousemove',e=>moves.push({x:e.clientX,y:e.clientY,trusted:e.isTrusted}));
+      document.addEventListener('mousedown',()=>presses++);true"#).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let mut previous = Value::Null;
+    let mut stable = 0;
+    while stable < 3 {
+        let current = cdp.evaluate("({ready:document.readyState,width:innerWidth,height:innerHeight,scale:visualViewport.scale,dpr:devicePixelRatio,generation:performance.timeOrigin})").unwrap();
+        if current["ready"] == "complete" && current == previous {
+            stable += 1;
+        } else {
+            stable = 0;
+        }
+        previous = current;
+        assert!(Instant::now() < deadline, "fixture viewport did not settle");
+        thread::sleep(Duration::from_millis(30));
+    }
+    let origin: lexmount_browser::cdp::PointerOrigin =
+        serde_json::from_value(cdp.click_with_point("#start").unwrap()).unwrap();
+    cdp.evaluate("window.moves=[];window.presses=0;true")
+        .unwrap();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let capture = Arc::clone(&observed);
+    cdp.set_pointer_observer(move |event| capture.lock().unwrap().push(event.clone()));
+    let result = cdp
+        .move_pointer("#finish", &origin, Duration::from_millis(300))
+        .unwrap();
+    let evidence = cdp
+        .evaluate(
+            "({presses,moves:moves.length,trusted:moves.every(e=>e.trusted),last:moves.at(-1)})",
+        )
+        .unwrap();
+    assert_eq!(evidence["presses"], 0);
+    assert_eq!(evidence["trusted"], true);
+    assert!(evidence["moves"].as_u64().unwrap() >= 2);
+    assert!((evidence["last"]["x"].as_f64().unwrap() - result["x"].as_f64().unwrap()).abs() <= 1.0);
+    let pointers = observed.lock().unwrap();
+    assert_eq!(pointers.len(), result["steps"].as_u64().unwrap() as usize);
+    assert!(
+        pointers
+            .iter()
+            .all(|event| event.phase == "move" && event.buttons == 0)
+    );
+    assert_eq!(pointers.last().unwrap().x, result["x"].as_f64().unwrap());
+    drop(pointers);
+    // The previous center remains hittable after this 1px shift. Rect locking,
+    // rather than just checking the old point, must still detect the change.
+    cdp.evaluate("document.querySelector('#start').onmouseover=function(){this.style.transform='translateX(1px)'};true").unwrap();
+    let origin = serde_json::from_value(result).unwrap();
+    assert!(
+        cdp.move_pointer("#start", &origin, Duration::from_millis(100))
+            .is_err()
+    );
+    assert_eq!(cdp.evaluate("window.presses").unwrap(), 0);
+}

@@ -2,7 +2,7 @@
 mod support;
 
 use httpmock::{Method::POST, MockServer};
-use lexmount_browser::cdp::Cdp;
+use lexmount_browser::cdp::{Cdp, PointerOrigin};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -243,6 +243,244 @@ fn click_events(seen: &[Value]) -> Vec<Value> {
         .filter(|r| r["method"] == "Input.dispatchMouseEvent")
         .map(|r| r["params"].clone())
         .collect()
+}
+
+fn origin_point() -> Value {
+    json!({"x":10,"y":20,"target_id":"wanted","coordinate_space":"css_viewport",
+        "viewport_width":1280,"viewport_height":720,"device_scale":2,"page_scale":1,
+        "page_generation":"123456789.25"})
+}
+
+fn pointer_point_response() -> Value {
+    json!({"result":{"result":{"value":{
+        "x":100,"y":80,"viewport_width":1280,"viewport_height":720,
+        "device_scale":2,"page_scale":1,"page_generation":"123456789.25",
+        "target_rects":[{"left":90,"right":110,"top":70,"bottom":90}]
+    }}}})
+}
+
+fn move_fixture(
+    overrides: Vec<(&'static str, usize, Value)>,
+    origin: Option<Value>,
+) -> (std::process::Output, Vec<Value>) {
+    let directory = tempfile::tempdir().unwrap();
+    let responses = overrides
+        .into_iter()
+        .chain((1..=160).map(|n| ("Runtime.callFunctionOn", n, pointer_point_response())))
+        .collect();
+    let peer = Peer::with_responses(two_pages(), false, None, responses);
+    let server = api(&peer.url);
+    let origin = origin.unwrap_or_else(origin_point).to_string();
+    let args = vec![
+        "action",
+        "--target-id",
+        "wanted",
+        "move",
+        "--session-id",
+        "browser",
+        "--selector",
+        "#target",
+        "--from-json",
+        &origin,
+        "--duration-ms",
+        "100",
+    ];
+    let output = support::cli(&server.base_url(), directory.path(), &args);
+    (output, peer.finish())
+}
+
+#[test]
+fn move_dispatches_only_real_unpressed_samples_and_reports_actual_endpoint() {
+    let (output, seen) = move_fixture(vec![], None);
+    let value = support::data(output);
+    let events = click_events(&seen);
+    assert!(events.len() >= 3);
+    assert_eq!(value["steps"], events.len());
+    assert!(value["elapsed_ms"].as_u64().unwrap() >= 100);
+    assert_eq!(value["requested_duration_ms"], 100);
+    assert_eq!(value["x"], 100.0);
+    assert_eq!(value["y"], 80.0);
+    assert_eq!(events[0]["x"], 10.0);
+    assert_eq!(events[0]["y"], 20.0);
+    assert_eq!(events.last().unwrap()["x"], value["x"]);
+    for event in &events {
+        assert_eq!(event["type"], "mouseMoved");
+        assert_eq!(event["button"], "none");
+        assert_eq!(event["buttons"], 0);
+        assert_eq!(event["clickCount"], 0);
+    }
+    for pair in events.windows(2) {
+        assert!(pair[1]["x"].as_f64().unwrap() >= pair[0]["x"].as_f64().unwrap());
+        assert!(pair[1]["y"].as_f64().unwrap() >= pair[0]["y"].as_f64().unwrap());
+    }
+    assert_eq!(seen.last().unwrap()["method"], "Runtime.releaseObject");
+}
+
+#[test]
+fn move_rejects_stale_origin_or_unknown_metadata_before_input() {
+    let (output, seen) = move_fixture(
+        vec![],
+        Some({
+            let mut p = origin_point();
+            p["page_generation"] = json!("different-document");
+            p
+        }),
+    );
+    assert!(!output.status.success());
+    assert!(click_events(&seen).is_empty());
+    let unknown = json!({"result":{"result":{"value":{"x":100,"y":80}}}});
+    let (output, seen) = move_fixture(vec![("Runtime.callFunctionOn", 1, unknown)], None);
+    assert!(!output.status.success());
+    assert!(click_events(&seen).is_empty());
+}
+
+#[test]
+fn move_stops_after_hover_replaces_target_or_changes_viewport_without_pressing() {
+    let moved = json!({"result":{"exceptionDetails":{"exception":{"description":"Error: click target moved after hover"}}}});
+    let mut resized = pointer_point_response();
+    resized["result"]["result"]["value"]["viewport_width"] = json!(1000);
+    let mut subtle_layout_change = pointer_point_response();
+    subtle_layout_change["result"]["result"]["value"]["target_rects"][0]["left"] = json!(91);
+    for response in [moved, resized, subtle_layout_change] {
+        let (output, seen) = move_fixture(vec![("Runtime.callFunctionOn", 2, response)], None);
+        assert!(!output.status.success());
+        let events = click_events(&seen);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["type"], "mouseMoved");
+        assert_eq!(events[0]["x"], 10.0);
+        assert_eq!(seen.last().unwrap()["method"], "Runtime.releaseObject");
+    }
+}
+
+#[test]
+fn click_point_report_is_opt_in_and_does_not_repeat_input() {
+    let directory = tempfile::tempdir().unwrap();
+    let peer = Peer::with_responses(
+        two_pages(),
+        false,
+        None,
+        vec![
+            ("Runtime.callFunctionOn", 1, pointer_point_response()),
+            ("Runtime.callFunctionOn", 2, pointer_point_response()),
+        ],
+    );
+    let server = api(&peer.url);
+    let output = support::cli(
+        &server.base_url(),
+        directory.path(),
+        &[
+            "action",
+            "--target-id",
+            "wanted",
+            "click",
+            "--session-id",
+            "browser",
+            "--selector",
+            "#target",
+            "--report-point",
+        ],
+    );
+    let point = support::data(output);
+    assert_eq!(point["x"], 100.0);
+    assert_eq!(point["y"], 80.0);
+    assert_eq!(point["page_generation"], "123456789.25");
+    assert_eq!(point["coordinate_space"], "css_viewport");
+    assert_eq!(click_events(&peer.finish()).len(), 3);
+}
+
+#[test]
+fn rejected_move_input_does_not_publish_an_unacknowledged_endpoint() {
+    use std::sync::{Arc, Mutex};
+    let mut responses = vec![(
+        "Input.dispatchMouseEvent",
+        2,
+        json!({"error":{"code":-32000,"message":"fixture refused input"}}),
+    )];
+    responses.extend((1..=160).map(|n| ("Runtime.callFunctionOn", n, pointer_point_response())));
+    let peer = Peer::with_responses(two_pages(), false, None, responses);
+    let mut cdp = Cdp::connect_to_target(&peer.url, "wanted").unwrap();
+    let pointers = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&pointers);
+    cdp.set_pointer_observer(move |event| observed.lock().unwrap().push(event.clone()));
+    assert!(
+        cdp.move_pointer(
+            "#target",
+            &serde_json::from_value::<PointerOrigin>(origin_point()).unwrap(),
+            Duration::from_millis(100)
+        )
+        .is_err()
+    );
+    drop(cdp);
+    assert_eq!(click_events(&peer.finish()).len(), 2);
+    let pointers = pointers.lock().unwrap();
+    assert_eq!(pointers.len(), 1);
+    assert_eq!(pointers[0].x, 10.0);
+}
+
+#[test]
+fn rejected_click_input_does_not_publish_a_false_persistent_point() {
+    use std::sync::{Arc, Mutex};
+    let peer = Peer::with_responses(
+        two_pages(),
+        false,
+        None,
+        vec![
+            ("Runtime.callFunctionOn", 1, pointer_point_response()),
+            (
+                "Input.dispatchMouseEvent",
+                1,
+                json!({"error":{"code":-32000,"message":"fixture refused input"}}),
+            ),
+        ],
+    );
+    let mut cdp = Cdp::connect_to_target(&peer.url, "wanted").unwrap();
+    let pointers = Arc::new(Mutex::new(Vec::new()));
+    let observed = Arc::clone(&pointers);
+    cdp.set_pointer_observer(move |event| observed.lock().unwrap().push(event.clone()));
+    assert!(cdp.click("#target").is_err());
+    drop(cdp);
+    assert_eq!(click_events(&peer.finish()).len(), 1);
+    assert!(pointers.lock().unwrap().is_empty());
+}
+
+#[test]
+fn sdk_move_observer_matches_every_actually_dispatched_sample() {
+    use std::sync::{Arc, Mutex};
+    let peer = Peer::with_responses(
+        two_pages(),
+        false,
+        None,
+        (1..=160)
+            .map(|n| ("Runtime.callFunctionOn", n, pointer_point_response()))
+            .collect(),
+    );
+    let mut cdp = Cdp::connect_to_target(&peer.url, "wanted").unwrap();
+    let pointers = Arc::new(Mutex::new(Vec::new()));
+    let captured = Arc::clone(&pointers);
+    cdp.set_pointer_observer(move |event| captured.lock().unwrap().push(event.clone()));
+    let result = cdp
+        .move_pointer(
+            "#target",
+            &serde_json::from_value::<PointerOrigin>(origin_point()).unwrap(),
+            Duration::from_millis(100),
+        )
+        .unwrap();
+    drop(cdp);
+    let seen = peer.finish();
+    let input = click_events(&seen);
+    let pointers = pointers.lock().unwrap();
+    assert_eq!(pointers.len(), input.len());
+    assert_eq!(result["steps"], pointers.len());
+    for (event, sent) in pointers.iter().zip(input) {
+        assert_eq!(event.phase, "move");
+        assert!((event.x - sent["x"].as_f64().unwrap()).abs() < 1e-9);
+        assert!((event.y - sent["y"].as_f64().unwrap()).abs() < 1e-9);
+        assert_eq!(event.viewport.viewport_width, Some(1280.0));
+        assert_eq!(
+            event.viewport.page_generation.as_deref(),
+            Some("123456789.25")
+        );
+    }
 }
 
 #[cfg(unix)]

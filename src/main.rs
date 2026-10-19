@@ -8,7 +8,7 @@ use std::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use lexmount_browser::{
     Client, Error, Result, auth,
-    cdp::{Cdp, WaitTextOptions},
+    cdp::{Cdp, PointerOrigin, WaitTextOptions},
     desktop_events::DesktopEvents,
     models::CreateSession,
 };
@@ -343,6 +343,20 @@ enum ActionCommand {
         session_id: String,
         #[arg(long)]
         selector: String,
+        /// Opt-in actual click coordinates; the default result remains true.
+        #[arg(long)]
+        report_point: bool,
+    },
+    Move {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        selector: String,
+        /// Complete actual data object returned by click --report-point or move.
+        #[arg(long)]
+        from_json: String,
+        #[arg(long, default_value_t = 600, value_parser = clap::value_parser!(u64).range(100..=2000))]
+        duration_ms: u64,
     },
     Fill {
         #[arg(long)]
@@ -690,12 +704,21 @@ fn run_context(client: Client, command: ContextCommand) -> Result<Value> {
 }
 
 fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -> Result<Value> {
+    let move_origin = if let ActionCommand::Move { from_json, .. } = &command {
+        if target_id.is_none() {
+            return Err(Error::Config("move requires --target-id".into()));
+        }
+        Some(serde_json::from_str::<PointerOrigin>(from_json)?)
+    } else {
+        None
+    };
     let action = match &command {
         ActionCommand::OpenUrl { .. } => "open-url",
         ActionCommand::Eval { .. } => "eval",
         ActionCommand::WaitSelector { .. } => "wait-selector",
         ActionCommand::WaitText { .. } => "wait-text",
         ActionCommand::Click { .. } => "click",
+        ActionCommand::Move { .. } => "move",
         ActionCommand::Fill { .. } => "fill",
         ActionCommand::Screenshot { .. } => "screenshot",
         ActionCommand::Pdf { .. } => "pdf",
@@ -708,6 +731,7 @@ fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -
         | ActionCommand::WaitSelector { session_id, .. }
         | ActionCommand::WaitText { session_id, .. }
         | ActionCommand::Click { session_id, .. }
+        | ActionCommand::Move { session_id, .. }
         | ActionCommand::Fill { session_id, .. }
         | ActionCommand::Screenshot { session_id, .. }
         | ActionCommand::Pdf { session_id, .. }
@@ -762,7 +786,29 @@ fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -
                 timeout: Duration::from_millis(timeout_ms),
                 poll: Duration::from_millis(poll_ms),
             }),
-            ActionCommand::Click { selector, .. } => cdp.click(&selector),
+            ActionCommand::Click {
+                selector,
+                report_point,
+                ..
+            } => {
+                if report_point {
+                    cdp.click_with_point(&selector)
+                } else {
+                    cdp.click(&selector)
+                }
+            }
+            ActionCommand::Move {
+                selector,
+                from_json: _,
+                duration_ms,
+                ..
+            } => cdp.move_pointer(
+                &selector,
+                move_origin
+                    .as_ref()
+                    .expect("move origin parsed before network requests"),
+                Duration::from_millis(duration_ms),
+            ),
             ActionCommand::Fill {
                 selector, value, ..
             } => cdp.fill(&selector, &value),
@@ -1078,5 +1124,29 @@ mod tests {
         };
 
         assert_eq!(parsed, client_name);
+    }
+
+    #[test]
+    fn move_requires_explicit_origin_and_bounded_duration_in_cli() {
+        let args = [
+            "browser-cli",
+            "action",
+            "--target-id",
+            "page",
+            "move",
+            "--session-id",
+            "session",
+            "--selector",
+            "#target",
+            "--from-json",
+            "{}",
+        ];
+        assert!(Cli::try_parse_from(args).is_ok());
+        for duration in ["99", "2001"] {
+            assert!(
+                Cli::try_parse_from(args.into_iter().chain(["--duration-ms", duration])).is_err()
+            );
+        }
+        assert!(Cli::try_parse_from(&args[..args.len() - 2]).is_err());
     }
 }

@@ -46,6 +46,36 @@ failed still exits with status 1 even if stderr is closed and cannot report the
 error. These source changes require a new binary; updating Skill instructions
 does not change an already installed CLI.
 
+## Real mouse movement
+
+`action move` dispatches actual unpressed CDP mouse samples to one explicit Target.
+Supply a real previous input position; the CLI never invents a starting position:
+
+```bash
+browser-cli action --target-id TARGET_ID click --session-id SESSION_ID --selector '#name' --report-point
+# Copy the complete returned data object, not guessed coordinates:
+browser-cli action --target-id TARGET_ID move --session-id SESSION_ID --selector '#notes' --from-json '{"x":100,"y":80,"target_id":"TARGET_ID","coordinate_space":"css_viewport","viewport_width":1280,"viewport_height":720,"device_scale":1,"page_scale":1,"page_generation":"GENERATION"}' --duration-ms 600
+```
+
+The numeric coordinates above are examples. Ordinary `click` still returns
+`data:true`; `--report-point` opts into an object with the actual x/y, CSS viewport
+metadata, document generation and Target ID. A move returns the same endpoint
+fields plus `steps`, `elapsed_ms` and `requested_duration_ms`; subsequent moves can
+use that real endpoint. Coordinates are CSS viewport pixels. `--from-json` must match the current Target, coordinate space, document and full
+viewport metadata; a stale origin is rejected before input. External input,
+resizing or navigation can invalidate a known position; obtain a new real point.
+
+Duration defaults to 600 ms, bounded to 100...2000 ms. Timing follows a monotonic
+clock with eased geometry and at most about 60 samples per second. Each sample
+waits for CDP, so cloud latency can reduce the actual sample count and extend the
+elapsed time. Desktop move events describe only samples acknowledged by CDP,
+not interpolated or predicted positions. They remain best effort.
+
+The original DOM object and endpoint stay locked. A detached, covered, disabled,
+moved target or changed document/viewport stops the move; it does not chase a new
+selector, press a button, retry input or switch Tabs. Hover can trigger page
+handlers. This is not a promise that moving over an arbitrary page has no effects.
+
 ## Session list pagination
 
 `session list` reads one page. Optional positive page flags map to the existing
@@ -173,7 +203,8 @@ binary does not have it. The package version and both bootstrap scripts target
 bootstrap can install 1.3.0 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
-Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
+Every `action` command accepts `--target-id`; it is required for `move` and
+optional for other actions. Obtain the page's CDP
 target ID from `session targets` (the page entry's `id` in a DevTools `/json`
 listing), then pass it on **each** action that should use that tab:
 
