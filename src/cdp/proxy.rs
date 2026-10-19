@@ -76,7 +76,39 @@ fn connect_with_deadline(url: &str, matcher: &Matcher, deadline: Deadline) -> Re
 }
 
 fn connect_once(url: &str, matcher: &Matcher, deadline: Deadline) -> Result<Socket> {
-    connect_transport(url, matcher, deadline, None).map(|(socket, _)| socket)
+    connect_transport(url, matcher, deadline, None, None).map(|(socket, _)| socket)
+}
+
+/// One direct, bounded connection for destructive control of a verified local
+/// process. A proxy cannot prove that its loopback peer is our recorded process.
+/// Unlike ordinary CDP, the deadline remains active after the WebSocket upgrade.
+#[cfg(target_os = "macos")]
+pub(crate) fn connect_owned_control(url: &str, budget: Duration) -> Result<Socket> {
+    connect_owned_control_with_matcher(url, &Matcher::from_env(), budget)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn connect_owned_control_with_matcher(
+    url: &str,
+    matcher: &Matcher,
+    budget: Duration,
+) -> Result<Socket> {
+    let endpoint = url::Url::parse(url)
+        .map_err(|_| Error::Config("Invalid owned Moli control endpoint".into()))?;
+    if endpoint.scheme() != "ws"
+        || endpoint.host_str() != Some("127.0.0.1")
+        || endpoint.port().is_none_or(|port| port == 0)
+        || !endpoint.username().is_empty()
+        || endpoint.password().is_some()
+        || endpoint.query().is_some()
+        || endpoint.fragment().is_some()
+        || !endpoint.path().starts_with("/devtools/browser/")
+        || endpoint.path().len() == "/devtools/browser/".len()
+    {
+        return Err(Error::Config("Invalid owned Moli control endpoint".into()));
+    }
+    connect_transport(url, matcher, Deadline::new(budget), None, Some(16 * 1024))
+        .map(|(socket, _)| socket)
 }
 
 // Single attempt: tickets must never be forwarded across WebSocket redirects.
@@ -86,6 +118,7 @@ pub(crate) fn connect_tunnel(url: &str, ticket: &str) -> Result<(Socket, Arc<Tcp
         &Matcher::from_env(),
         Deadline::new(TIMEOUT),
         Some(ticket),
+        None,
     )
 }
 
@@ -118,9 +151,15 @@ fn connect_transport(
     matcher: &Matcher,
     deadline: Deadline,
     ticket: Option<&str>,
+    control_limit: Option<usize>,
 ) -> Result<(Socket, Arc<TcpStream>)> {
     let destination = destination(url)?;
     let proxy = matcher.intercept(&destination);
+    if control_limit.is_some() && proxy.is_some() {
+        return Err(Error::Config(
+            "Moli protocol close requires a verified direct loopback route; the configured proxy route cannot verify process ownership; no close or signal was sent".into(),
+        ));
+    }
     // ponytail: HTTP CONNECT only. Never silently retry a proxy failure direct.
     if proxy
         .as_ref()
@@ -208,6 +247,14 @@ fn connect_transport(
                 .max_message_size(Some(65536 + 4))
                 .max_frame_size(Some(65536 + 4)),
         )
+    } else if let Some(limit) = control_limit {
+        Some(
+            tungstenite::protocol::WebSocketConfig::default()
+                .write_buffer_size(0)
+                .max_write_buffer_size(limit * 2)
+                .max_message_size(Some(limit))
+                .max_frame_size(Some(limit)),
+        )
     } else {
         None
     };
@@ -224,9 +271,11 @@ fn connect_transport(
             )
         })?;
     deadline.remaining(stage)?;
-    timeout_handle.set_read_timeout(None)?;
-    timeout_handle.set_write_timeout(None)?;
-    connected.store(true, Ordering::Relaxed);
+    if control_limit.is_none() {
+        timeout_handle.set_read_timeout(None)?;
+        timeout_handle.set_write_timeout(None)?;
+        connected.store(true, Ordering::Relaxed);
+    }
     if ticket.is_some()
         && response
             .headers()
@@ -298,7 +347,8 @@ fn remaining(deadline: Instant) -> io::Result<Duration> {
 }
 
 // Each underlying I/O uses the remaining budget, including TLS handshake
-// loops and peers that keep trickling bytes. Disabled after the WS upgrade.
+// loops and peers that keep trickling bytes. Ordinary CDP disables this after
+// the WS upgrade; owned destructive control keeps its deadline throughout.
 #[derive(Debug)]
 pub(crate) struct ConnectionStream {
     stream: Arc<TcpStream>,
@@ -454,6 +504,128 @@ mod tests {
                 Err(error) => panic!("accept failed: {error}"),
             }
         }
+    }
+
+    #[test]
+    fn owned_control_refuses_selected_proxy_before_any_connection() {
+        let endpoint = listener();
+        let proxy = listener();
+        let matcher = Matcher::builder()
+            .all(format!("http://{}", proxy.local_addr().unwrap()))
+            .build();
+        let error = connect_owned_control_with_matcher(
+            &format!(
+                "ws://{}/devtools/browser/owned",
+                endpoint.local_addr().unwrap()
+            ),
+            &matcher,
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Config(ref text) if text.contains("verified direct loopback"))
+        );
+        for socket in [endpoint, proxy] {
+            socket.set_nonblocking(true).unwrap();
+            assert_eq!(
+                socket.accept().unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+        }
+    }
+
+    #[test]
+    fn owned_control_does_not_follow_redirects() {
+        let endpoint = listener();
+        let redirect = listener();
+        let url = format!(
+            "ws://{}/devtools/browser/owned",
+            endpoint.local_addr().unwrap()
+        );
+        let location = format!(
+            "ws://{}/devtools/browser/other",
+            redirect.local_addr().unwrap()
+        );
+        let server = thread::spawn(move || {
+            let mut stream = accept_with_timeout(&endpoint);
+            read_headers(&mut stream);
+            write!(
+                stream,
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n"
+            )
+            .unwrap();
+        });
+        assert!(
+            connect_owned_control_with_matcher(
+                &url,
+                &Matcher::builder().build(),
+                Duration::from_secs(1)
+            )
+            .is_err()
+        );
+        server.join().unwrap();
+        redirect.set_nonblocking(true).unwrap();
+        assert_eq!(
+            redirect.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn owned_control_keeps_total_io_deadline_after_upgrade() {
+        let endpoint = listener();
+        let url = format!(
+            "ws://{}/devtools/browser/owned",
+            endpoint.local_addr().unwrap()
+        );
+        let server = thread::spawn(move || {
+            let mut socket = tungstenite::accept(accept_with_timeout(&endpoint)).unwrap();
+            // Trickle an unmasked text frame without completing it. Repeated
+            // reads must consume one budget rather than restarting a timeout.
+            let stream = socket.get_mut();
+            let _ = stream.write_all(&[0x81, 20]);
+            for _ in 0..20 {
+                if stream.write_all(b"x").is_err() {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(30));
+            }
+        });
+        let started = Instant::now();
+        let mut socket = connect_owned_control_with_matcher(
+            &url,
+            &Matcher::builder().build(),
+            Duration::from_millis(150),
+        )
+        .unwrap();
+        assert!(socket.read().is_err());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(socket);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn owned_control_rejects_oversized_messages() {
+        let endpoint = listener();
+        let url = format!(
+            "ws://{}/devtools/browser/owned",
+            endpoint.local_addr().unwrap()
+        );
+        let server = thread::spawn(move || {
+            let mut socket = tungstenite::accept(accept_with_timeout(&endpoint)).unwrap();
+            let _ = socket.send(Message::text("x".repeat(16 * 1024 + 1)));
+        });
+        let mut socket = connect_owned_control_with_matcher(
+            &url,
+            &Matcher::builder().build(),
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        assert!(matches!(
+            socket.read(),
+            Err(tungstenite::Error::Capacity(_))
+        ));
+        server.join().unwrap();
     }
 
     #[test]

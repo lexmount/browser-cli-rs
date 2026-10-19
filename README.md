@@ -53,6 +53,17 @@ stale/reused PID is inactive and is never signalled. Startup logs are private an
 are not copied into command errors or telemetry. These files are local runtime
 state, not cloud account or browser profile storage.
 
+On macOS, explicit close first verifies the recorded process and its exact TCP
+listener, then sends one browser-root `Browser.close` with a bounded control
+connection. It reports closed only after that original process is inactive;
+the protocol ACK means acceptance, not a durability guarantee. A selected proxy
+route cannot prove the local peer's process ownership, so this destructive
+control operation fails closed unless the existing policy selects a direct
+loopback route. It does not alter proxy settings or retry direct. Only an exact
+method-not-found response from an older Moli permits the original SIGTERM path,
+with a fresh process-identity check. An accepted or uncertain close never falls
+back to a signal. Linux retains the existing pidfd/SIGTERM path.
+
 Moli responses retain `{ok:true,data:…}`. Session rows contain `provider:"moli"`,
 `session_id`, `status`, `context_display_name`, `created_at`, `connection_ref`,
 `http_endpoint` and `ws`; endpoint fields are null for inactive instances. Lists
@@ -66,15 +77,22 @@ The opt-in real-browser test creates and closes its own Moli process and uses on
 an owned synthetic page:
 
 ```bash
-BROWSER_CLI_TEST_MOLI=/absolute/path/to/verified/moli cargo test --locked --test moli_browser -- --ignored
+BROWSER_CLI_TEST_MOLI=/absolute/path/to/verified/moli cargo test --locked --test moli_browser real_moli_owned_lifecycle_actions_and_local_task_events_without_cloud_auth -- --ignored --exact
+BROWSER_CLI_TEST_MOLI=/absolute/path/to/verified/moli cargo test --locked --test moli_browser real_moli_exact_tabs_and_frontend_disconnect_preserve_other_tabs_and_process -- --ignored --exact
 ```
 
 Validation boundary: the ordinary macOS CLI has passed the owned-instance test
-against official Moli v1.1.18. Running this local provider from an independent
-Codex sandbox has not yet been verified; it needs authorized registry writes and
-loopback access under that sandbox's policy. The CLI does not change sandbox or
-proxy settings. Linux process support is implemented but has not been exercised
-in this integration, and Windows owned-process support is not implemented.
+against official Moli v1.1.18. An independent Mac Codex has also qualified the
+complete create/owned-page/two-click/close lifecycle using this development CLI
+and a separately built, unreleased Moli `Browser.close` patch. All eight Agent
+tool calls used the existing default sandbox, with no permission/proxy changes;
+the Agent closed its own instance and parent cleanup sent no stop request.
+This qualification depends on those development binaries. Official Moli v1.1.18
+still uses the legacy signal fallback, whose close was denied in the earlier
+independent sandbox test; the installed desktop app has not been upgraded by
+this test. The CLI does not change sandbox or proxy settings. Linux process
+support is implemented but has not been exercised in this integration, and
+Windows owned-process support is not implemented.
 
 ## Build
 

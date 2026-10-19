@@ -557,3 +557,321 @@ fn real_moli_exact_tabs_and_frontend_disconnect_preserve_other_tabs_and_process(
         true
     );
 }
+
+// Run the public SDK in a separate test worker, so its Moli children can be
+// reaped with waitpid without mutating this test process's global environment.
+#[test]
+#[ignore = "requires a Browser.close-capable dev BROWSER_CLI_TEST_MOLI and BROWSER_CLI_TEST_MOLI_BROWSER_CLOSE=1; creates only owned instances"]
+fn real_moli_browser_close_naturally_exits_only_its_owned_process() {
+    run_browser_close_test(
+        "real_moli_browser_close_naturally_exits_only_its_owned_process",
+        browser_close_process_worker,
+        "MOLI_BROWSER_CLOSE_OS_PROOF exit_zero=2 listener_closed=2 viewer_disconnect_survived=true sentinel_survived=true",
+    );
+}
+
+#[test]
+#[ignore = "requires a Browser.close-capable dev BROWSER_CLI_TEST_MOLI and capability flag; verifies production close on owned processes"]
+fn real_moli_sdk_close_prefers_verified_protocol_and_naturally_exits() {
+    run_browser_close_test(
+        "real_moli_sdk_close_prefers_verified_protocol_and_naturally_exits",
+        sdk_close_process_worker,
+        "MOLI_SDK_CLOSE_OS_PROOF exit_zero=2 listener_closed=2 viewer_disconnect_survived=true sentinel_survived=true",
+    );
+}
+
+fn run_browser_close_test(name: &str, worker: fn(), proof: &str) {
+    assert_eq!(
+        std::env::var("BROWSER_CLI_TEST_MOLI_BROWSER_CLOSE").as_deref(),
+        Ok("1"),
+        "explicit dev Browser.close capability opt-in is required"
+    );
+    let binary = PathBuf::from(
+        std::env::var_os("BROWSER_CLI_TEST_MOLI").expect("set dev BROWSER_CLI_TEST_MOLI"),
+    );
+    assert!(binary.is_absolute() && binary.is_file());
+    if std::env::var("MOLI_BROWSER_CLOSE_TEST_WORKER").as_deref() == Ok(name) {
+        worker();
+        return;
+    }
+
+    let private = tempfile::tempdir().unwrap();
+    let registry = private.path().join("instances");
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args(["--exact", name, "--ignored", "--nocapture"])
+        .env("MOLI_BROWSER_CLOSE_TEST_WORKER", name)
+        .env("LEXMOUNT_MOLI_STATE_DIR", &registry)
+        .env("LEXMOUNT_MOLI_BINARY", &binary)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // Proxy settings remain inherited. Existing support::command and
+    // support::isolated_test clear them, so neither helper is used here.
+    let output = bounded_output(&mut command, Duration::from_secs(90));
+
+    // The hard timeout can skip worker destructors. Recover only records in
+    // this newly created private registry; cleanup never counts as test proof.
+    let mut cleanup_ok = true;
+    if registry.is_dir() {
+        for entry in std::fs::read_dir(&registry).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|v| v.to_str()) != Some("json") {
+                continue;
+            }
+            let id = path.file_stem().and_then(|v| v.to_str()).unwrap();
+            assert!(
+                id.len() == 37
+                    && id.starts_with("moli_")
+                    && id[5..].bytes().all(|b| b.is_ascii_hexdigit())
+            );
+            let mut cleanup = Command::new(env!("CARGO_BIN_EXE_browser-cli"));
+            cleanup
+                .args(["--provider", "moli", "session", "close", "--session-id", id])
+                .env("LEXMOUNT_MOLI_STATE_DIR", &registry)
+                .env("LEXMOUNT_MOLI_BINARY", &binary)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            cleanup_ok &= bounded_output(&mut cleanup, Duration::from_secs(5))
+                .is_ok_and(|o| o.status.success());
+        }
+    }
+    let output = output.expect("owned worker exceeded its bound or failed to spawn");
+    assert!(
+        output.status.success(),
+        "owned Browser.close worker failed; cleanup is not qualification"
+    );
+    assert!(cleanup_ok, "owned registry cleanup failed");
+    assert!(String::from_utf8_lossy(&output.stdout).contains(proof));
+    println!("{proof}");
+}
+
+struct BrowserCloseOwnedProcesses {
+    moli: lexmount_browser::moli::Moli,
+    registry: PathBuf,
+    ids: Vec<String>,
+}
+impl BrowserCloseOwnedProcesses {
+    fn create(&mut self) -> (Value, libc::pid_t) {
+        let row = self.moli.create(Duration::from_secs(12)).unwrap();
+        let id = row["session_id"].as_str().unwrap().to_owned();
+        self.ids.push(id.clone());
+        assert_eq!(self.moli.get(&id).unwrap()["status"], "active");
+        let record: Value = serde_json::from_slice(
+            &std::fs::read(self.registry.join(format!("{id}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(record["closed"], false);
+        assert!(
+            record["process"]["start_identity"]
+                .as_str()
+                .is_some_and(|v| !v.is_empty())
+        );
+        let pid = libc::pid_t::try_from(record["process"]["pid"].as_u64().unwrap()).unwrap();
+        assert!(pid > 1);
+        (row, pid)
+    }
+
+    fn confirm_natural_exit(&self, row: &Value, pid: libc::pid_t) {
+        let deadline = Instant::now() + Duration::from_secs(7);
+        let mut status = 0;
+        loop {
+            // This PID is a direct child created by this worker's Moli SDK.
+            let waited = unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) };
+            if waited == pid {
+                break;
+            }
+            if waited < 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            assert_eq!(waited, 0, "own direct child must remain waitable");
+            assert!(
+                Instant::now() < deadline,
+                "Browser.close did not exit its own process in time"
+            );
+            std::thread::sleep(Duration::from_millis(15));
+        }
+        assert!(
+            libc::WIFEXITED(status),
+            "signal termination is not natural exit"
+        );
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "shutdown must return process exit 0"
+        );
+        let origin = url::Url::parse(row["http_endpoint"].as_str().unwrap()).unwrap();
+        assert_eq!(origin.host_str(), Some("127.0.0.1"));
+        let address = SocketAddr::from(([127, 0, 0, 1], origin.port().unwrap()));
+        assert!(
+            TcpStream::connect_timeout(&address, Duration::from_millis(150)).is_err(),
+            "owned listener must disappear"
+        );
+        let id = row["session_id"].as_str().unwrap();
+        assert_eq!(
+            self.moli.get(id).unwrap()["status"],
+            "closed",
+            "original registry kernel identity must no longer match"
+        );
+        assert_eq!(
+            self.moli.close(id).unwrap()["already_inactive"],
+            true,
+            "post-proof registry cleanup must not signal"
+        );
+    }
+}
+impl Drop for BrowserCloseOwnedProcesses {
+    fn drop(&mut self) {
+        for id in &self.ids {
+            let _ = self.moli.close(id);
+            if let Ok(bytes) = std::fs::read(self.registry.join(format!("{id}.json")))
+                && let Ok(record) = serde_json::from_slice::<Value>(&bytes)
+                && let Some(pid) = record["process"]["pid"]
+                    .as_u64()
+                    .and_then(|p| libc::pid_t::try_from(p).ok())
+            {
+                let deadline = Instant::now() + Duration::from_secs(1);
+                while unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) } == 0
+                    && Instant::now() < deadline
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+    }
+}
+
+fn browser_close_process_worker() {
+    use lexmount_browser::cdp::Cdp;
+    let registry = PathBuf::from(std::env::var_os("LEXMOUNT_MOLI_STATE_DIR").unwrap());
+    assert!(registry.is_absolute());
+    let mut owned = BrowserCloseOwnedProcesses {
+        moli: lexmount_browser::moli::Moli::from_env().unwrap(),
+        registry,
+        ids: Vec::new(),
+    };
+    assert_eq!(
+        std::fs::read_dir(&owned.registry).unwrap().count(),
+        0,
+        "worker accepts only its fresh registry"
+    );
+    let (first, first_pid) = owned.create();
+    let (sentinel, sentinel_pid) = owned.create();
+    let first_ws = first["ws"].as_str().unwrap();
+    let sentinel_ws = sentinel["ws"].as_str().unwrap();
+    assert_ne!(first["http_endpoint"], sentinel["http_endpoint"]);
+    let viewer = Cdp::connect(first_ws).unwrap();
+    drop(viewer);
+    assert_eq!(
+        owned
+            .moli
+            .get(first["session_id"].as_str().unwrap())
+            .unwrap()["status"],
+        "active"
+    );
+    let mut sentinel_view = Cdp::connect(sentinel_ws).unwrap();
+    assert_eq!(
+        sentinel_view
+            .command(
+                "Runtime.evaluate",
+                json!({"expression":"globalThis.__ownedSentinel=73","returnByValue":true})
+            )
+            .unwrap()["result"]["value"],
+        73
+    );
+    let mut root = Cdp::connect(first_ws).unwrap();
+    assert_eq!(
+        root.command_root("Browser.close", json!({})).unwrap(),
+        json!({}),
+        "root ACK is acceptance, not exit proof"
+    );
+    drop(root);
+    owned.confirm_natural_exit(&first, first_pid);
+    assert_eq!(
+        owned
+            .moli
+            .get(sentinel["session_id"].as_str().unwrap())
+            .unwrap()["status"],
+        "active"
+    );
+    assert_eq!(
+        sentinel_view
+            .command(
+                "Runtime.evaluate",
+                json!({"expression":"globalThis.__ownedSentinel","returnByValue":true})
+            )
+            .unwrap()["result"]["value"],
+        73
+    );
+    assert_eq!(
+        sentinel_view
+            .command_root("Browser.close", json!({}))
+            .unwrap(),
+        json!({})
+    );
+    drop(sentinel_view);
+    owned.confirm_natural_exit(&sentinel, sentinel_pid);
+    println!(
+        "MOLI_BROWSER_CLOSE_OS_PROOF exit_zero=2 listener_closed=2 viewer_disconnect_survived=true sentinel_survived=true"
+    );
+}
+
+fn sdk_close_process_worker() {
+    use lexmount_browser::cdp::Cdp;
+    let registry = PathBuf::from(std::env::var_os("LEXMOUNT_MOLI_STATE_DIR").unwrap());
+    let mut owned = BrowserCloseOwnedProcesses {
+        moli: lexmount_browser::moli::Moli::from_env().unwrap(),
+        registry,
+        ids: Vec::new(),
+    };
+    assert_eq!(std::fs::read_dir(&owned.registry).unwrap().count(), 0);
+    let (first, first_pid) = owned.create();
+    let (sentinel, sentinel_pid) = owned.create();
+    drop(Cdp::connect(first["ws"].as_str().unwrap()).unwrap());
+    assert_eq!(
+        owned
+            .moli
+            .get(first["session_id"].as_str().unwrap())
+            .unwrap()["status"],
+        "active"
+    );
+    let mut sentinel_view = Cdp::connect(sentinel["ws"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        sentinel_view
+            .command(
+                "Runtime.evaluate",
+                json!({"expression":"globalThis.__ownedSentinel=91","returnByValue":true})
+            )
+            .unwrap()["result"]["value"],
+        91
+    );
+    let result = owned
+        .moli
+        .close(first["session_id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(result["closed"], true);
+    assert_eq!(result["already_inactive"], false);
+    owned.confirm_natural_exit(&first, first_pid);
+    assert_eq!(
+        sentinel_view
+            .command(
+                "Runtime.evaluate",
+                json!({"expression":"globalThis.__ownedSentinel","returnByValue":true})
+            )
+            .unwrap()["result"]["value"],
+        91
+    );
+    assert_eq!(
+        owned
+            .moli
+            .close(sentinel["session_id"].as_str().unwrap())
+            .unwrap()["closed"],
+        true
+    );
+    drop(sentinel_view);
+    owned.confirm_natural_exit(&sentinel, sentinel_pid);
+    println!(
+        "MOLI_SDK_CLOSE_OS_PROOF exit_zero=2 listener_closed=2 viewer_disconnect_survived=true sentinel_survived=true"
+    );
+}

@@ -10,6 +10,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod close;
 mod process;
 mod registry;
 use registry::{Record, Registry};
@@ -165,10 +166,7 @@ impl Moli {
 
     pub fn close(&self, id: &str) -> Result<Value> {
         let mut record = self.registry.read(id)?;
-        let already_inactive = record.closed || !process::matches(&record.process);
-        if !already_inactive {
-            process::stop(&record.process)?;
-        }
+        let already_inactive = close::close(&record)?;
         record.closed = true;
         self.registry.write(&record)?;
         Ok(

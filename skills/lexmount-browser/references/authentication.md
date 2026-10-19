@@ -1,28 +1,52 @@
 # Authentication
 
-Preferred login:
+For the cloud provider, check `auth status` first. With a supported selected
+desktop account, manage login in the native app; use the file-mode flow below
+when desktop sharing is not selected. Local `--provider moli` requires no cloud
+login and does not support cloud auth/doctor commands.
+
+File-mode login:
 
 ```text
-browser-cli auth login [--client-name "NAME"]
+browser-cli auth login [--client-name "NAME"] [--connect-base-url URL]
 ```
 
 The default client name is `Agent`. Quote and pass the current Agent's
 user-facing name when available; for example, WorkBuddy can pass
 `--client-name "WorkBuddy"`.
 
-The CLI binds a random loopback port on `127.0.0.1`, creates a PKCE verifier and state, opens the Lexmount approval page, exchanges the returned one-time code, and stores the scoped credential in:
+The CLI binds a random loopback port on `127.0.0.1`, creates a PKCE verifier and state, opens the Lexmount approval page, exchanges the returned one-time code, and stores the returned project credential in:
 
 ```text
 ~/.config/lexmount/browser-cli/credentials.json
 ```
 
 The file is mode `0600` on Unix. The CLI redacts the API key from all JSON output.
+Returned scope strings are authorization metadata, not proof of separate
+server-enforced restrictions on a shared project key. Do not invent an expiry
+or refresh/revocation capability when the returned credential does not provide it.
+
+Keep the chosen approval site, API origin and project together. The `.com` and
+`.cn` selections do not establish shared accounts, projects or interchangeable
+keys. Use the intended login site's `--connect-base-url` when explicitly
+provided, rather than changing the host of an existing credential.
 
 For managed environments, the SDK also accepts `LEXMOUNT_API_KEY`, `LEXMOUNT_PROJECT_ID`, optional `LEXMOUNT_BASE_URL`, and optional `LEXMOUNT_REGION`. Do not ask users to paste secret values into an Agent chat.
 
-Use `browser-cli auth logout` to remove only the local credential file. Environment variables are managed outside the CLI.
+In file mode, `browser-cli auth logout` removes only the local credential file;
+it does not revoke a server-side project key. Environment variables are managed
+outside the CLI. Desktop-selected mode has the separate behavior below.
 
 ## Account supplied by the desktop app (macOS)
+
+This needs a binary built with the desktop reader; updating the Skill does not
+upgrade a published executable. `auth status` must actually report
+`source:"desktop_keychain"` for this mode. A separately installed Skill binary
+or arbitrary Rust SDK host is not automatically trusted by the app's Keychain
+ACL. Prefer an explicitly supplied app-bundled CLI path for that integration;
+do not copy a key into a legacy file, alter ACLs or disable desktop selection
+to bypass a denied/missing account. Windows account sharing is not established
+by this macOS implementation.
 
 After login, the native Lexmount app enables its account selector at
 `~/.config/lexmount/browser-cli/desktop-auth.json` (`{"version":1,"enabled":true}`).
@@ -30,8 +54,7 @@ Default CLI and Rust SDK clients then read the classic macOS Keychain generic
 password with service `com.lexmount.tab-manager.auth`, account `active`. The
 value is the existing Credentials JSON; the selector contains no credential.
 The app explicitly grants Keychain read access to itself and its bundled CLI.
-An arbitrary SDK host does not inherit that permission. The reader never
-changes ACLs or invokes a command-line password utility, and it fails rather
+The reader never changes ACLs or invokes a command-line password utility, and it fails rather
 than presenting an interactive Keychain permission prompt.
 
 Once enabled, a missing, locked, denied, invalid or expired desktop credential
@@ -63,3 +86,7 @@ instruct the caller to manage that account in the Lexmount app; they do not
 write/delete an unrelated legacy file or claim to revoke a server key. CLI
 logout with an explicit file removes only that file. Desktop account creation,
 selection, ACL management and sign-out remain owned by the native app.
+
+Sign-out clears the local desktop authorization, not the shared project key on
+the server. An auth status or desktop event send is not evidence that a page
+action succeeded; verify the browser operation separately.

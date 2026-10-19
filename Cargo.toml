@@ -38,3 +38,6 @@ socket2 = "0.6"
 [dev-dependencies]
 httpmock = "0.7"
 tempfile = "3"
+
+[build-dependencies]
+cc = "1"
