@@ -4,6 +4,78 @@ Native Rust SDK and command-line client for Lexmount cloud browsers. The binary 
 named `browser-cli` so existing agent instructions can migrate without changing
 their command prefix.
 
+## Local Moli instances
+
+`--provider lexmount` is the default and preserves the existing cloud commands.
+On macOS and Linux, `--provider moli` manages only instances created by this CLI;
+it does not load cloud credentials, scan ports, or attach to an arbitrary service.
+No account is needed for local Moli.
+
+```bash
+browser-cli --provider moli session create
+browser-cli --provider moli session list --status active
+browser-cli --provider moli session targets --session-id MOLI_SESSION_ID
+browser-cli --provider moli action --target-id TARGET_ID eval --session-id MOLI_SESSION_ID --expression 'document.title'
+browser-cli --provider moli agent state --session-id MOLI_SESSION_ID --target-id TARGET_ID --run-id RUN_ID --state running --state-version 1
+browser-cli --provider moli session close --session-id MOLI_SESSION_ID
+```
+
+`session get`, real `click`/`move`, `fill`, screenshots, and the other existing CDP
+actions use the same syntax. The explicit `session close` stops only the recorded
+owned process; disconnecting a viewer does not stop it. Cloud contexts, tunnels,
+downloads management, keepalive, and cloud-only create options are rejected for
+Moli. No local profile management is added. `agent state` remains a best-effort
+desktop observation, never a persisted task or receipt confirmation.
+
+Syntax and routing reuse do not establish support for every CDP method. Current
+real Moli acceptance covers click/move, Chinese fill, eval, screenshots, task
+events and the owned-instance lifecycle; file workflows, popups, permissions and
+other browser behavior still need separate validation.
+
+Executable lookup is: explicit development override `LEXMOUNT_MOLI_BINARY`
+(absolute path), bundled `moli` beside `browser-cli`, then
+`~/.local/share/lexmount/moli/moli`, then an absolute PATH directory containing
+`moli`. An invalid explicit override fails rather than choosing a different
+binary. First-party Moli v1.1.18 is the initial integration baseline. It is started
+with loopback binding, an OS-assigned port, `--layout --image --font`, and a 100 ms
+screencast interval. Existing proxy policy is preserved for HTTP and CDP; there is
+no automatic direct-connect fallback. Local startup is bounded to at most 15 seconds;
+`--timeout-seconds` can lower that bound.
+
+Bundled-first lookup is implemented; the Moli executable has not yet been packaged
+inside the desktop app. Production installation and signing are not complete.
+
+The private registry lives at `~/.local/state/lexmount/browser-cli/moli` (0700,
+records/logs 0600); `LEXMOUNT_MOLI_STATE_DIR` can select an absolute development or
+test directory. Records are atomically replaced and bind the opaque `moli_…`
+Session ID to the process birth identity, executable and loopback endpoint. A
+stale/reused PID is inactive and is never signalled. Startup logs are private and
+are not copied into command errors or telemetry. These files are local runtime
+state, not cloud account or browser profile storage.
+
+Moli responses retain `{ok:true,data:…}`. Session rows contain `provider:"moli"`,
+`session_id`, `status`, `context_display_name`, `created_at`, `connection_ref`,
+`http_endpoint` and `ws`; endpoint fields are null for inactive instances. Lists
+retain `sessions` and the existing pagination keys. `session targets` returns the
+standard Target array with exact page WebSocket URLs. The local event reference is
+`moli:` plus SHA-256 of UTF-8 `lexmount-local-moli-v1`, one NUL byte and the full
+Session ID. It is unrelated to cloud project/account identity; no endpoint or
+credential is put in event payloads.
+
+The opt-in real-browser test creates and closes its own Moli process and uses only
+an owned synthetic page:
+
+```bash
+BROWSER_CLI_TEST_MOLI=/absolute/path/to/verified/moli cargo test --locked --test moli_browser -- --ignored
+```
+
+Validation boundary: the ordinary macOS CLI has passed the owned-instance test
+against official Moli v1.1.18. Running this local provider from an independent
+Codex sandbox has not yet been verified; it needs authorized registry writes and
+loopback access under that sandbox's policy. The CLI does not change sandbox or
+proxy settings. Linux process support is implemented but has not been exercised
+in this integration, and Windows owned-process support is not implemented.
+
 ## Build
 
 ```bash

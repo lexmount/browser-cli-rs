@@ -11,6 +11,7 @@ use lexmount_browser::{
     cdp::{Cdp, PointerOrigin, WaitTextOptions},
     desktop_events::DesktopEvents,
     models::CreateSession,
+    moli::Moli,
 };
 use serde_json::{Value, json};
 
@@ -21,8 +22,17 @@ use serde_json::{Value, json};
     about = "Lexmount cloud browser CLI (native Rust)"
 )]
 struct Cli {
+    /// Browser backend; local Moli instances do not use a cloud account.
+    #[arg(long, global = true, value_enum, default_value = "lexmount")]
+    provider: Provider,
     #[command(subcommand)]
     command: Command,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum Provider {
+    Lexmount,
+    Moli,
 }
 
 #[derive(Subcommand)]
@@ -231,12 +241,12 @@ enum DownloadsCommand {
 
 #[derive(Args)]
 struct CreateSessionArgs {
-    #[arg(long, default_value = "normal")]
-    browser_mode: String,
+    #[arg(long)]
+    browser_mode: Option<String>,
     #[arg(long)]
     context_id: Option<String>,
-    #[arg(long, default_value = "read_write")]
-    context_mode: String,
+    #[arg(long)]
+    context_mode: Option<String>,
     #[arg(long)]
     context_description: Option<String>,
     #[arg(long)]
@@ -398,9 +408,10 @@ enum ActionCommand {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Command::Tunnel {
-        command: TunnelCommand::Open { duration },
-    } = cli.command
+    if cli.provider == Provider::Lexmount
+        && let Command::Tunnel {
+            command: TunnelCommand::Open { duration },
+        } = cli.command
     {
         return match run_tunnel_open(duration) {
             Ok(()) => ExitCode::SUCCESS,
@@ -475,6 +486,9 @@ fn print_error(stderr: &mut impl Write, error: &Error) {
 }
 
 fn run(cli: Cli) -> Result<Value> {
+    if cli.provider == Provider::Moli {
+        return run_moli(cli.command);
+    }
     match cli.command {
         Command::Version => {
             Ok(json!({"name":"browser-cli","version":env!("CARGO_PKG_VERSION"),"runtime":"rust"}))
@@ -585,9 +599,9 @@ fn run_session(client: Client, command: SessionCommand) -> Result<Value> {
         SessionCommand::Create(args) => {
             let context = args
                 .context_id
-                .map(|id| json!({"id":id,"mode":args.context_mode}));
+                .map(|id| json!({"id":id,"mode":args.context_mode.unwrap_or_else(|| "read_write".into())}));
             let request = CreateSession {
-                browser_mode: args.browser_mode,
+                browser_mode: args.browser_mode.unwrap_or_else(|| "normal".into()),
                 context,
                 context_description: args.context_description,
                 weak_lock: args.weak_lock.then_some(true),
@@ -704,6 +718,34 @@ fn run_context(client: Client, command: ContextCommand) -> Result<Value> {
 }
 
 fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -> Result<Value> {
+    run_action_with_connection(
+        command,
+        target_id,
+        |session_id| {
+            Ok(DesktopEvents::from_env(
+                client.base_url(),
+                client.project_id(),
+                session_id,
+            ))
+        },
+        |session_id| {
+            let session = client.get_session_with_ws(session_id)?;
+            let ws = session.ws.ok_or_else(|| {
+                Error::Cdp(format!("session {session_id} has no CDP WebSocket URL"))
+            })?;
+            Ok(ws)
+        },
+        |_| Ok(()),
+    )
+}
+
+fn run_action_with_connection(
+    command: ActionCommand,
+    target_id: Option<&str>,
+    event_factory: impl FnOnce(&str) -> Result<Option<DesktopEvents>>,
+    resolve: impl FnOnce(&str) -> Result<String>,
+    verify_after_connect: impl FnOnce(&str) -> Result<()>,
+) -> Result<Value> {
     let move_origin = if let ActionCommand::Move { from_json, .. } = &command {
         if target_id.is_none() {
             return Err(Error::Config("move requires --target-id".into()));
@@ -738,19 +780,17 @@ fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -
         | ActionCommand::Snapshot { session_id }
         | ActionCommand::Raw { session_id, .. } => session_id.clone(),
     };
-    let events = DesktopEvents::from_env(client.base_url(), client.project_id(), &session_id);
+    let events = event_factory(&session_id)?;
     if let Some(events) = &events {
         events.command_started(action);
     }
     let result = (|| {
-        let session = client.get_session_with_ws(&session_id)?;
-        let ws = session
-            .ws
-            .ok_or_else(|| Error::Cdp(format!("session {session_id} has no CDP WebSocket URL")))?;
+        let ws = resolve(&session_id)?;
         let mut cdp = match target_id {
             Some(id) => Cdp::connect_to_target(&ws, id)?,
             None => Cdp::connect(&ws)?,
         };
+        verify_after_connect(&session_id)?;
         if let Some(events) = &events {
             events.target_resolved(cdp.target_id());
             let events = events.clone();
@@ -834,6 +874,107 @@ fn run_action(client: Client, command: ActionCommand, target_id: Option<&str>) -
     result
 }
 
+fn run_moli(command: Command) -> Result<Value> {
+    match command {
+        Command::Version => {
+            Ok(json!({"name":"browser-cli","version":env!("CARGO_PKG_VERSION"),"runtime":"rust"}))
+        }
+        Command::Session { command } => {
+            // Validate unsupported combinations before touching local state or credentials.
+            if matches!(
+                &command,
+                SessionCommand::Downloads { .. } | SessionCommand::Keepalive { .. }
+            ) {
+                return Err(Error::Config(
+                    "This session command is not supported by provider moli".into(),
+                ));
+            }
+            if let SessionCommand::Create(args) = &command {
+                validate_moli_create(args)?;
+            }
+            let moli = Moli::from_env()?;
+            match command {
+                SessionCommand::Create(args) => {
+                    moli.create(Duration::from_secs(args.timeout_seconds.min(15)))
+                }
+                SessionCommand::List {
+                    status,
+                    page,
+                    page_size,
+                } => moli.list(status.as_deref(), page, page_size),
+                SessionCommand::Get { session_id } => moli.get(&session_id),
+                SessionCommand::Targets { session_id } => moli.targets(&session_id),
+                SessionCommand::Close { session_id } => moli.close(&session_id),
+                _ => unreachable!("unsupported Moli session command was rejected"),
+            }
+        }
+        Command::Action { command, target_id } => {
+            let moli = Moli::from_env()?;
+            run_action_with_connection(
+                command,
+                target_id.as_deref(),
+                |id| {
+                    Ok(DesktopEvents::from_env_with_connection_ref(
+                        &moli.event_connection_ref(id)?,
+                        id,
+                    ))
+                },
+                |id| moli.browser_ws(id),
+                |id| moli.browser_ws(id).map(|_| ()),
+            )
+        }
+        Command::Agent {
+            command: AgentCommand::State(args),
+        } => {
+            if args.state != AgentState::NeedsHuman && args.handoff_id.is_some() {
+                return Err(Error::Config(
+                    "--handoff-id is only valid with --state needs_human".into(),
+                ));
+            }
+            let moli = Moli::from_env()?;
+            let reference = moli.event_connection_ref(&args.session_id)?;
+            let attempted = DesktopEvents::from_env_for_task_with_connection_ref(
+                &reference,
+                &args.session_id,
+                &args.target_id,
+                &args.run_id,
+            )
+            .is_some_and(|events| {
+                events.task_state(
+                    args.state.as_str(),
+                    args.state_version,
+                    args.handoff_id.as_deref(),
+                )
+            });
+            Ok(
+                json!({"provider":"moli","session_id":args.session_id,"target_id":args.target_id,"run_id":args.run_id,"state":args.state.as_str(),"state_version":args.state_version,"handoff_id":args.handoff_id,"connection_ref":reference,"event_kind":"task.state","attempted":attempted,"delivery":"best_effort","server_persisted":false}),
+            )
+        }
+        _ => Err(Error::Config(
+            "This command is not supported by provider moli".into(),
+        )),
+    }
+}
+
+fn validate_moli_create(args: &CreateSessionArgs) -> Result<()> {
+    if args.browser_mode.is_some()
+        || args.context_id.is_some()
+        || args.context_mode.is_some()
+        || args.context_description.is_some()
+        || args.weak_lock
+        || args.official_proxy
+        || args.local_proxy_tunnel_id.is_some()
+        || args.custom_image_id.is_some()
+        || args.window_size.is_some()
+        || args.downloads
+        || args.recording
+        || args.timeout_seconds == 0
+    {
+        return Err(Error::Config("Moli create does not support cloud profile, proxy, image, window, download or recording options; timeout must be positive".into()));
+    }
+    Ok(())
+}
+
 fn require_yes(yes: bool, action: &str) -> Result<()> {
     if yes {
         Ok(())
@@ -867,6 +1008,26 @@ fn print_json(writer: &mut impl Write, value: &Value) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_defaults_to_cloud_and_is_global_without_changing_action_syntax() {
+        assert!(
+            Cli::try_parse_from(["browser-cli", "session", "list"])
+                .unwrap()
+                .provider
+                == Provider::Lexmount
+        );
+        for args in [
+            vec!["browser-cli", "--provider", "moli", "session", "list"],
+            vec!["browser-cli", "session", "list", "--provider", "moli"],
+        ] {
+            assert!(Cli::try_parse_from(args).unwrap().provider == Provider::Moli);
+        }
+        assert!(
+            Cli::try_parse_from(["browser-cli", "--provider", "arbitrary", "session", "list"])
+                .is_err()
+        );
+    }
 
     fn agent_state_arguments(state: &str, version: &str) -> Vec<String> {
         [

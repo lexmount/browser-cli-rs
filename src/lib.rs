@@ -6,6 +6,7 @@ pub mod client;
 pub mod desktop_events;
 pub mod error;
 pub mod models;
+pub mod moli;
 pub mod tunnels;
 
 pub use client::{Client, ClientBuilder};

@@ -47,6 +47,21 @@ impl DesktopEvents {
     /// Use explicit paired IPC environment variables, or a private discovery file.
     /// Invalid configuration silently disables observations, not the operation.
     pub fn from_env(api_base_url: &str, project_id: &str, session_id: &str) -> Option<Self> {
+        Self::from_env_with_connection_ref(&connection_ref(api_base_url, project_id)?, session_id)
+    }
+
+    /// A provider-owned, non-secret identity; never accept an endpoint or API key here.
+    pub fn from_env_with_connection_ref(connection_ref: &str, session_id: &str) -> Option<Self> {
+        let digest = connection_ref
+            .strip_prefix("lexmount:")
+            .or_else(|| connection_ref.strip_prefix("moli:"))?;
+        if digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return None;
+        }
         if env::var("LEXMOUNT_APP_EVENTS").is_ok_and(|v| v.eq_ignore_ascii_case("off")) {
             return None;
         }
@@ -69,11 +84,10 @@ impl DesktopEvents {
         {
             return None;
         }
-        let connection_ref = connection_ref(api_base_url, project_id)?;
         let events = Self::new(
             connection.endpoint,
             connection.token,
-            connection_ref,
+            connection_ref.to_owned(),
             session_id.to_owned(),
             env::var("LEXMOUNT_AGENT_RUN_ID")
                 .ok()
@@ -119,6 +133,20 @@ impl DesktopEvents {
         target_id: &str,
         run_id: &str,
     ) -> Option<Self> {
+        Self::from_env_for_task_with_connection_ref(
+            &connection_ref(api_base_url, project_id)?,
+            session_id,
+            target_id,
+            run_id,
+        )
+    }
+
+    pub fn from_env_for_task_with_connection_ref(
+        connection_ref: &str,
+        session_id: &str,
+        target_id: &str,
+        run_id: &str,
+    ) -> Option<Self> {
         if target_id.trim().is_empty()
             || target_id.len() > MAX_ID_BYTES
             || run_id.trim().is_empty()
@@ -128,7 +156,7 @@ impl DesktopEvents {
         {
             return None;
         }
-        let events = Self::from_env(api_base_url, project_id, session_id)?;
+        let events = Self::from_env_with_connection_ref(connection_ref, session_id)?;
         if let Ok(mut emitter) = events.inner.lock() {
             emitter.target_id = Some(target_id.to_owned());
             emitter.run_id = Some(run_id.to_owned());
