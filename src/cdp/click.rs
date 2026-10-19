@@ -202,12 +202,22 @@ impl Cdp {
             ));
         }
         let started = Instant::now();
+        let mut sample_started = started;
         self.confirmed_move(from)?;
         let mut steps = 1_u64;
         loop {
             if let Some(remaining) = duration.checked_sub(started.elapsed()) {
-                thread::sleep(remaining.min(Duration::from_micros(16_667)));
+                // Validation, input ACK and the observer consume this sample's
+                // budget too. Never add a full frame of sleep after slow I/O,
+                // or replay missed ticks in a burst to catch up.
+                let pause = Duration::from_micros(16_667)
+                    .saturating_sub(sample_started.elapsed())
+                    .min(remaining);
+                if !pause.is_zero() {
+                    thread::sleep(pause);
+                }
             }
+            sample_started = Instant::now();
             // Keep the original DOM object and endpoint. Hover-induced layout,
             // navigation, overlays or viewport changes stop, never chase a new point.
             if self.click_point(object_id, Some(destination), true)? != destination {

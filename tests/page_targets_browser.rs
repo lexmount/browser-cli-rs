@@ -887,6 +887,11 @@ fn real_mouse_move_is_trusted_unpressed_and_aborts_small_hover_layout_changes() 
     let result = cdp
         .move_pointer("#finish", &origin, Duration::from_millis(300))
         .unwrap();
+    println!(
+        "{}",
+        json!({"isolated_move_samples":result["steps"],"elapsed_ms":result["elapsed_ms"],
+               "requested_duration_ms":result["requested_duration_ms"]})
+    );
     let evidence = cdp
         .evaluate(
             "({presses,moves:moves.length,trusted:moves.every(e=>e.trusted),last:moves.at(-1)})",
