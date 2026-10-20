@@ -2,3 +2,4 @@
 /dist/
 /skills/lexmount-browser/bin/
 *.tmp
+__pycache__/

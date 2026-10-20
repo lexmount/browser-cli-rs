@@ -4,6 +4,12 @@ Native Rust SDK and command-line client for Lexmount cloud browsers. The binary 
 named `browser-cli` so existing agent instructions can migrate without changing
 their command prefix.
 
+## Agent integrations
+
+See the [integration index](plugins/README.md) for shared CLI/MCP Skills,
+client package sources, build commands, review links and release boundaries.
+The existing `skills/lexmount-browser` path and default Skill ZIP are unchanged.
+
 ## Build
 
 ```bash
