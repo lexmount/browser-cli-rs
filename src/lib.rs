@@ -5,6 +5,7 @@ pub mod cdp;
 pub mod client;
 pub mod error;
 pub mod models;
+pub mod ops;
 pub mod tunnels;
 
 pub use client::{Client, ClientBuilder};

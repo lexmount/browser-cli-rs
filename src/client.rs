@@ -96,17 +96,22 @@ impl ClientBuilder {
             base_url,
             region,
             http,
+            ops_http: HttpClient::builder()
+                .timeout(self.timeout)
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
         })
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct Client {
-    api_key: String,
+    pub(crate) api_key: String,
     project_id: String,
     base_url: String,
     region: Option<String>,
     http: HttpClient,
+    pub(crate) ops_http: HttpClient,
 }
 
 impl Client {
@@ -123,7 +128,7 @@ impl Client {
         &self.base_url
     }
 
-    fn body_with_region(&self, mut body: Value) -> Value {
+    pub(crate) fn body_with_region(&self, mut body: Value) -> Value {
         if let (Some(region), Some(object)) = (&self.region, body.as_object_mut()) {
             object.insert("region_id".into(), Value::String(region.clone()));
         }
@@ -259,6 +264,15 @@ impl Client {
         if let Some(region) = region {
             body["region_id"] = region["region_id"].clone();
         }
+        self.create_session_from_body(body, poll_timeout, true)
+    }
+
+    pub(crate) fn create_session_from_body(
+        &self,
+        body: Value,
+        poll_timeout: Duration,
+        hydrate: bool,
+    ) -> Result<Session> {
         let accepted: Value = self.json(Method::POST, "/instance/v2", Some(body))?;
         let session_id = accepted
             .get("session_id")
@@ -272,7 +286,8 @@ impl Client {
         loop {
             let session = self.get_session(session_id)?;
             match session.status.as_str() {
-                "active" => return self.hydrate_ws(session),
+                "active" if hydrate => return self.hydrate_ws(session),
+                "active" => return Ok(session),
                 "create_failed" => {
                     return Err(Error::Api {
                         status: 500,

@@ -10,6 +10,7 @@ use lexmount_browser::{
     Client, Error, Result, auth,
     cdp::{Cdp, WaitTextOptions},
     models::CreateSession,
+    ops::{CreateLogin, LoginItemRef},
 };
 use serde_json::{Value, json};
 
@@ -40,6 +41,11 @@ enum Command {
     Session {
         #[command(subcommand)]
         command: SessionCommand,
+    },
+    /// Start and manage OPS website login tasks.
+    Ops {
+        #[command(subcommand)]
+        command: OpsCommand,
     },
     Context {
         #[command(subcommand)]
@@ -128,6 +134,74 @@ enum SessionCommand {
         #[command(subcommand)]
         command: DownloadsCommand,
     },
+}
+
+#[derive(Subcommand)]
+enum OpsCommand {
+    /// Create a fresh OPS Chrome session using an explicit image.
+    Session {
+        #[arg(long)]
+        custom_image_id: String,
+        #[arg(long, default_value_t = 85)]
+        timeout_seconds: u64,
+    },
+    /// List credential connections for the project.
+    Connections {
+        #[command(flatten)]
+        page: OpsPage,
+    },
+    /// List credential items matching a website origin.
+    Items {
+        #[arg(long)]
+        connection_id: String,
+        #[arg(long)]
+        site_origin: String,
+        #[command(flatten)]
+        page: OpsPage,
+    },
+    /// Start a login using the only match or an explicitly selected item.
+    Start {
+        #[arg(long)]
+        session_id: String,
+        #[arg(long)]
+        connection_id: String,
+        #[arg(long)]
+        site_origin: String,
+        #[arg(long, requires = "item_id")]
+        vault_id: Option<String>,
+        #[arg(long, requires = "vault_id")]
+        item_id: Option<String>,
+        /// Retry a start request with the same key and explicit item.
+        #[arg(long, requires_all = ["vault_id", "item_id"])]
+        idempotency_key: Option<String>,
+    },
+    Get(OpsTask),
+    /// Wait for completion or a request for manual verification.
+    Wait {
+        #[command(flatten)]
+        task: OpsTask,
+        #[arg(long, default_value_t = 120)]
+        timeout_seconds: u64,
+    },
+    /// Open the manual verification page.
+    Verify(OpsTask),
+    /// Resume after completing manual verification in the browser.
+    Resume(OpsTask),
+    Cancel(OpsTask),
+}
+
+#[derive(Args)]
+struct OpsPage {
+    #[arg(long)]
+    cursor: Option<String>,
+    #[arg(long, default_value_t = 50)]
+    limit: u8,
+}
+
+#[derive(Args)]
+struct OpsTask {
+    #[arg(long)]
+    task_id: String,
 }
 
 #[derive(Subcommand)]
@@ -408,6 +482,7 @@ fn run(cli: Cli) -> Result<Value> {
             }
         }
         Command::Session { command } => run_session(Client::from_env()?, command),
+        Command::Ops { command } => run_ops(Client::from_env()?, command),
         Command::Context { command } => run_context(Client::from_env()?, command),
         Command::Action { command, target_id } => {
             run_action(Client::from_env()?, command, target_id.as_deref())
@@ -547,6 +622,91 @@ fn run_session(client: Client, command: SessionCommand) -> Result<Value> {
             Ok(json!({"session_id":session_id,"checks":snapshots.len(),"snapshots":snapshots}))
         }
     }
+}
+
+fn run_ops(client: Client, command: OpsCommand) -> Result<Value> {
+    let task = match command {
+        OpsCommand::Session {
+            custom_image_id,
+            timeout_seconds,
+        } => {
+            let session = client
+                .create_ops_session(&custom_image_id, Duration::from_secs(timeout_seconds))?;
+            return Ok(json!({
+                "session_id": session.session_id,
+                "status": session.status,
+                "region_id": session.region_id,
+                "requested_image": custom_image_id,
+            }));
+        }
+        OpsCommand::Connections { page } => {
+            return Ok(serde_json::to_value(client.list_credential_connections(
+                page.cursor.as_deref(),
+                page.limit,
+            )?)?);
+        }
+        OpsCommand::Items {
+            connection_id,
+            site_origin,
+            page,
+        } => {
+            return Ok(serde_json::to_value(client.list_login_items(
+                &connection_id,
+                &site_origin,
+                page.cursor.as_deref(),
+                page.limit,
+            )?)?);
+        }
+        OpsCommand::Start {
+            session_id,
+            connection_id,
+            site_origin,
+            vault_id,
+            item_id,
+            idempotency_key,
+        } => client.create_login_task(CreateLogin {
+            session_id: &session_id,
+            connection_id: &connection_id,
+            site_origin: &site_origin,
+            item: vault_id
+                .zip(item_id)
+                .map(|(vault_id, item_id)| LoginItemRef { vault_id, item_id }),
+            idempotency_key: idempotency_key.as_deref(),
+        })?,
+        OpsCommand::Get(task) => client.get_login_task(&task.task_id)?,
+        OpsCommand::Wait {
+            task,
+            timeout_seconds,
+        } => client.wait_for_login_task(&task.task_id, Duration::from_secs(timeout_seconds))?,
+        OpsCommand::Verify(task) => {
+            let task = client.get_login_task(&task.task_id)?;
+            let url = task
+                .requires_action
+                .as_ref()
+                .filter(|action| {
+                    task.state == "awaiting_user"
+                        && !task.cancel_requested
+                        && action.kind == "manual_verification"
+                })
+                .and_then(|action| action.open_url.as_deref())
+                .and_then(|url| url::Url::parse(url).ok())
+                .filter(|url| {
+                    url.scheme() == "https"
+                        && url.host().is_some()
+                        && url.username().is_empty()
+                        && url.password().is_none()
+                })
+                .ok_or_else(|| {
+                    Error::Config("OPS task has no available manual verification page".into())
+                })?;
+            open::that(url.as_str())
+                .map_err(|_| Error::Config("could not open OPS verification page".into()))?;
+            task
+        }
+        OpsCommand::Resume(task) => client.resume_login_task(&task.task_id)?,
+        OpsCommand::Cancel(task) => client.cancel_login_task(&task.task_id)?,
+    };
+    Ok(serde_json::to_value(task)?)
 }
 
 fn run_context(client: Client, command: ContextCommand) -> Result<Value> {
