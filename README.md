@@ -299,3 +299,27 @@ Tencent Cloud COS through the `cos-release` GitHub environment. It requires
 `TENCENT_CLOUD_SECRET_ID` and `TENCENT_CLOUD_SECRET_KEY` secrets plus
 `COS_BUCKET`, `COS_REGION`, `COS_PUBLIC_BASE_URL`, and `COS_OBJECT_PREFIX`
 variables.
+
+## OPS website login
+
+Use a project API key and a project with an active OPS credential connection.
+Choose the Chrome image configured for the target environment.
+
+```sh
+browser-cli ops connections
+browser-cli ops items --connection-id CONNECTION --site-origin https://example.com
+browser-cli ops session --custom-image-id IMAGE
+browser-cli ops start --session-id SESSION --connection-id CONNECTION --site-origin https://example.com
+browser-cli ops wait --task-id TASK
+```
+
+Add both `--vault-id` and `--item-id` to `ops start` when account selection is
+required. To retry an explicit start after an uncertain response, use the same
+`--idempotency-key`, session, connection, site, and item. Without a key, each
+invocation starts a new login intent.
+
+If the task state is `awaiting_user`, run `browser-cli ops verify --task-id TASK`,
+complete verification in the browser, then run `browser-cli ops resume --task-id TASK`
+and wait again. `ops get` reads the current state, and `ops cancel` requests
+cancellation. Close the session with `browser-cli session close --session-id SESSION`
+when you finish using it.
