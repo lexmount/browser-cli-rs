@@ -230,6 +230,11 @@ impl Client {
         request: CreateSession,
         poll_timeout: Duration,
     ) -> Result<Session> {
+        if request.enable_captcha == Some(true) && request.browser_mode != "normal" {
+            return Err(Error::Config(
+                "automatic CAPTCHA handling requires normal browser mode".into(),
+            ));
+        }
         let local_id = request
             .proxy
             .as_ref()

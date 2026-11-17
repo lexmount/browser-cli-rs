@@ -46,6 +46,22 @@ failed still exits with status 1 even if stderr is closed and cannot report the
 error. These source changes require a new binary; updating Skill instructions
 does not change an already installed CLI.
 
+## Automatic CAPTCHA handling
+
+```bash
+browser-cli session create --browser-mode normal --enable-captcha
+```
+
+`--enable-captcha` enables server-side automatic CAPTCHA handling for the created
+session only. It is off by default and supports only `normal` browser mode;
+requesting it with any other mode returns a configuration error before any
+session request. Availability and usage are subject to your plan's CAPTCHA quota.
+Rust SDK callers can set `CreateSession.enable_captcha` to `Some(true)`; the
+default `None` omits the field from the request.
+
+This option requires a binary built from source containing this feature;
+updating Skill documentation alone does not update an installed binary.
+
 ## Local network proxy tunnels
 
 Introduced in 1.3.0. This requires a newly built or published binary; updating the

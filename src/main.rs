@@ -162,6 +162,9 @@ enum DownloadsCommand {
 struct CreateSessionArgs {
     #[arg(long, default_value = "normal")]
     browser_mode: String,
+    /// Enable server-side CAPTCHA handling for this session (normal mode only).
+    #[arg(long)]
+    enable_captcha: bool,
     #[arg(long)]
     context_id: Option<String>,
     #[arg(long, default_value = "read_write")]
@@ -472,6 +475,7 @@ fn run_session(client: Client, command: SessionCommand) -> Result<Value> {
                 .map(|id| json!({"id":id,"mode":args.context_mode}));
             let request = CreateSession {
                 browser_mode: args.browser_mode,
+                enable_captcha: args.enable_captcha.then_some(true),
                 context,
                 context_description: args.context_description,
                 weak_lock: args.weak_lock.then_some(true),
