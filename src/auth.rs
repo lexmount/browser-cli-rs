@@ -405,6 +405,142 @@ fn is_internal_api_base_url(value: &str) -> bool {
     host.contains(".svc.") || host.ends_with(".svc") || host.ends_with(".cluster.local")
 }
 
+/// Device authorization needs only outbound HTTPS; no loopback listener or opener.
+pub fn device_login(
+    project_id: Option<&str>,
+    client_name: &str,
+    connect_base_url: &str,
+    timeout: Duration,
+    path: Option<&Path>,
+) -> Result<Value> {
+    let base = Url::parse(connect_base_url).map_err(|e| Error::Config(e.to_string()))?;
+    let loopback = matches!(base.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"));
+    if base.scheme() != "https" && !(base.scheme() == "http" && loopback) {
+        return Err(Error::Config("device login requires HTTPS".into()));
+    }
+    let started = Instant::now();
+    let client = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(15))
+        .build()?;
+    let response = client
+        .post(base.join("/api/connect/device/authorize").unwrap())
+        .json(&json!({"client_name":client_name}))
+        .send()?;
+    if !response.status().is_success() {
+        return Err(Error::Authentication(format!(
+            "Device login could not start (HTTP {}). The console must support device authorization.",
+            response.status()
+        )));
+    }
+    let payload: Value = response.json()?;
+    let secret = payload["device_code"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| Error::Authentication("Missing device code".into()))?;
+    let code = payload["user_code"]
+        .as_str()
+        .ok_or_else(|| Error::Authentication("Missing user code".into()))?;
+    let verify = base
+        .join(
+            payload["verification_uri"]
+                .as_str()
+                .unwrap_or("/connect/device"),
+        )
+        .map_err(|e| Error::Config(e.to_string()))?;
+    if verify.origin() != base.origin() {
+        return Err(Error::Authentication(
+            "Verification page must use the selected console origin".into(),
+        ));
+    }
+    let lifetime = timeout.min(Duration::from_secs(
+        payload["expires_in"].as_u64().unwrap_or(600),
+    ));
+    let mut interval = payload["interval"].as_u64().unwrap_or(5).max(1);
+    eprintln!(
+        "Open on your phone or another computer: {verify}\nEnter code: {code}\nWaiting for approval ({} seconds). Ctrl+C to cancel.",
+        lifetime.as_secs()
+    );
+    loop {
+        let remaining = lifetime.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(Error::Timeout(
+                "Device authorization expired; run auth login again".into(),
+            ));
+        }
+        thread::sleep(Duration::from_secs(interval).min(remaining));
+        let remaining = lifetime.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            continue;
+        }
+        let response = match client
+            .post(base.join("/api/connect/device/token").unwrap())
+            .timeout(remaining.min(Duration::from_secs(15)))
+            .json(&json!({"device_code":secret}))
+            .send()
+        {
+            Ok(response) => response,
+            Err(error) if error.is_timeout() || error.is_connect() => {
+                interval = interval.saturating_mul(2).min(30);
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let status = response.status();
+        if status.is_server_error() {
+            interval = interval.saturating_mul(2).min(30);
+            continue;
+        }
+        let payload: Value = response.json()?;
+        if !status.is_success() {
+            match payload["error"].as_str() {
+                Some("authorization_pending") => continue,
+                Some("slow_down") => {
+                    interval = interval.saturating_add(5);
+                    continue;
+                }
+                Some("access_denied") => {
+                    return Err(Error::Authentication("Device authorization denied".into()));
+                }
+                Some("expired_token") => {
+                    return Err(Error::Authentication(
+                        "Device authorization expired; run auth login again".into(),
+                    ));
+                }
+                _ => {
+                    return Err(Error::Authentication(
+                        "Device authorization failed; run auth login again".into(),
+                    ));
+                }
+            }
+        }
+        let mut credential = extract_api_key(&payload)
+            .ok_or_else(|| Error::Authentication("Invalid device credential response".into()))?;
+        if project_id.is_some_and(|id| id != credential.project_id) {
+            return Err(Error::Authentication(
+                "Authorized project does not match --project-id; credentials were not saved".into(),
+            ));
+        }
+        if is_internal_api_base_url(&credential.api_base_url) {
+            return Err(Error::Authentication("Invalid device API base URL".into()));
+        }
+        credential.connect_base_url = Some(connect_base_url.trim_end_matches('/').to_owned());
+        let saved = save_credentials(&credential, path)?;
+        return Ok(
+            json!({"authenticated":true,"credentials_saved":true,"credentials_file":saved,
+            "project_id":credential.project_id,"api_base_url":credential.api_base_url,"api_key_redacted":true}),
+        );
+    }
+}
+
+pub fn prefers_device_login() -> bool {
+    std::env::var_os("SSH_CONNECTION").is_some()
+        || std::env::var_os("SSH_TTY").is_some()
+        || (cfg!(target_os = "linux")
+            && std::env::var_os("DISPLAY").is_none()
+            && std::env::var_os("WAYLAND_DISPLAY").is_none())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,7 +32,8 @@ fn login_fixture(no_open: bool) {
     if no_open {
         cmd.arg("--no-open");
     } else {
-        cmd.env("PATH", dir.path())
+        cmd.arg("--browser")
+            .env("PATH", dir.path())
             .env_remove("DISPLAY")
             .env_remove("WAYLAND_DISPLAY")
             .env_remove("BROWSER");
