@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-version="${LEXMOUNT_BROWSER_CLI_VERSION:-1.3.0}"
+version="${LEXMOUNT_BROWSER_CLI_VERSION:-1.4.0}"
 download_base_url="${LEXMOUNT_BROWSER_CLI_DOWNLOAD_BASE_URL:-https://cli-bin-1377899528.cos.ap-nanjing.myqcloud.com/releases/browser-cli}"
 repo="${download_base_url%/}/v${version}"
 case "$(uname -s)-$(uname -m)" in
+  Linux-x86_64) target="x86_64-unknown-linux-musl" ;;
   Darwin-arm64) target="aarch64-apple-darwin" ;;
-  *) echo "Unsupported platform: $(uname -s) $(uname -m). This release supports macOS arm64 and Windows x86_64." >&2; exit 2 ;;
+  *) echo "Unsupported platform: $(uname -s) $(uname -m). This release supports Linux x86_64, macOS arm64 and Windows x86_64." >&2; exit 2 ;;
 esac
 
 asset="browser-cli-v${version}-${target}"
