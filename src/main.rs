@@ -82,10 +82,16 @@ enum AuthCommand {
         client_name: String,
         #[arg(long, default_value = auth::DEFAULT_CONNECT_BASE_URL)]
         connect_base_url: String,
-        #[arg(long, default_value_t = 300)]
+        #[arg(long, default_value_t = 600)]
         timeout_seconds: u64,
         #[arg(long)]
         no_open: bool,
+        /// Authorize on another device, without a local browser.
+        #[arg(long, conflicts_with_all = ["no_open", "browser"])]
+        device: bool,
+        /// Force local browser / loopback login even over SSH.
+        #[arg(long)]
+        browser: bool,
         #[arg(long)]
         credentials_file: Option<PathBuf>,
     },
@@ -424,15 +430,32 @@ fn run_auth(command: AuthCommand) -> Result<Value> {
             connect_base_url,
             timeout_seconds,
             no_open,
+            device,
+            browser,
             credentials_file,
-        } => auth::login_with_client_name(
-            project_id.as_deref(),
-            &client_name,
-            &connect_base_url,
-            Duration::from_secs(timeout_seconds),
-            !no_open,
-            credentials_file.as_deref(),
-        ),
+        } => {
+            if device || (!no_open && !browser && auth::prefers_device_login()) {
+                if !device && std::env::var_os("CI").is_some() {
+                    return Err(Error::Authentication("Configure credentials for CI, or explicitly request interactive --device login".into()));
+                }
+                auth::device_login(
+                    project_id.as_deref(),
+                    &client_name,
+                    &connect_base_url,
+                    Duration::from_secs(timeout_seconds),
+                    credentials_file.as_deref(),
+                )
+            } else {
+                auth::login_with_client_name(
+                    project_id.as_deref(),
+                    &client_name,
+                    &connect_base_url,
+                    Duration::from_secs(timeout_seconds),
+                    !no_open,
+                    credentials_file.as_deref(),
+                )
+            }
+        }
         AuthCommand::Logout { credentials_file } => {
             Ok(json!({"removed":auth::logout(credentials_file.as_deref())?}))
         }

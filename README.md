@@ -150,8 +150,8 @@ automatic action retries. These changes require a new CLI release; published
 Explicit page selection is introduced in version 1.2.0. Check that the installed
 binary's `browser-cli action --help` lists `--target-id`; the published 1.1.15
 binary does not have it. The package version and both bootstrap scripts target
-1.3.0 together. Merging or building this source does not publish release assets:
-bootstrap can install 1.3.0 only after its binaries and checksums are published
+1.4.0 together. Merging or building this source does not publish release assets:
+bootstrap can install 1.4.0 only after its binaries and checksums are published
 to COS. Until then, use a source build for local verification.
 
 Every `action` command accepts an optional `--target-id`. Obtain the page's CDP
@@ -263,7 +263,7 @@ overwrite an existing release with changed binaries.
    `skills/lexmount-browser/scripts/bootstrap.ps1` and `bootstrap.sh`.
 2. Run `.github/scripts/test-release-version.ps1` with Windows PowerShell 5.1
    or PowerShell 7, then `.github/scripts/verify-release-version.ps1 -ReleaseTag
-   v1.3.0` (substitute the intended version). Complete CI and merge the PR.
+   v1.4.0` (substitute the intended version). Complete CI and merge the PR.
 3. Create the matching tag **on that merged commit**. Typing a new tag or
    release title in GitHub does not update any source version. The release
    workflow rejects inconsistent versions before building, signing or uploading.
@@ -306,3 +306,20 @@ variables.
 Linux x86_64 uses the static musl release and the same `scripts/bootstrap.sh` and `scripts/doctor.sh` as macOS. Linux ARM64 is not currently a published target.
 
 `browser-cli auth login --no-open` prints the authorization URL on stderr and waits for the callback; stdout remains the final JSON result. The default login attempts to open a browser, but keeps waiting if the desktop opener is missing. On a headless/SSH host, forward the printed callback port from your desktop using `ssh -L PORT:127.0.0.1:PORT HOST`, then open the printed URL on your desktop. Keep the login process running until it completes. Do not post authorization URLs or credentials in chat.
+
+### Device login for SSH / headless Linux
+
+`browser-cli auth login --device` prints a console address and short code. Open it
+on a phone or another computer, sign in, enter the code and approve the request.
+The terminal polls over HTTPS and saves credentials automatically (0600 on Unix).
+No inbound port or SSH forwarding is required. The console must have device-login
+support deployed before using this mode.
+
+`auth login` automatically selects device mode over SSH or on Linux without
+DISPLAY/WAYLAND_DISPLAY. Use `--browser` to force local loopback login; `--no-open`
+retains manual loopback behavior. CI should supply credentials instead of starting
+interactive login; explicit `--device` is available when a human is present.
+`--project-id` verifies the approved account's project before saving credentials.
+An expired, denied or consumed request requires a new login; API keys are never
+printed. Ctrl+C stops polling. The console authorization request expires in ten
+minutes even if the terminal is closed.

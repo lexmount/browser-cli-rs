@@ -8,7 +8,7 @@ with tempfile.TemporaryDirectory() as t:
  (fake/'curl').write_text('''#!/bin/sh
 while [ "$#" -gt 0 ]; do case "$1" in https:*) url="$1";; -o) shift; output="$1";; esac; shift; done
 case "$url" in
- *SHA256SUMS) printf '%s  %s\\n' "$(openssl dgst -sha256 "$FIXTURE" | awk '{print $NF}')" 'browser-cli-v1.3.0-x86_64-unknown-linux-musl' > "$output";;
+ *SHA256SUMS) printf '%s  %s\\n' "$(openssl dgst -sha256 "$FIXTURE" | awk '{print $NF}')" 'browser-cli-v1.4.0-x86_64-unknown-linux-musl' > "$output";;
  *x86_64-unknown-linux-musl) cp "$FIXTURE" "$output";;
  *) exit 9;;
 esac
