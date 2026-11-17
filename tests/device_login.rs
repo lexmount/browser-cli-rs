@@ -4,6 +4,9 @@ use httpmock::prelude::*;
 use serde_json::json;
 
 fn fixture(error: Option<&str>, auto: bool, mismatch: bool) {
+    fixture_url(error, auto, mismatch, "https://api.example.test");
+}
+fn fixture_url(error: Option<&str>, auto: bool, mismatch: bool, api_url: &str) {
     let server = MockServer::start();
     let create = server.mock(|when, then| {
         when.method(POST).path("/api/connect/device/authorize");
@@ -14,7 +17,7 @@ fn fixture(error: Option<&str>, auto: bool, mismatch: bool) {
         if let Some(error) = error {
             then.status(400).json_body(json!({"error":error}));
         } else {
-            then.status(200).json_body(json!({"project_id":"fixture", "api_key":"fixture-api-secret", "api_base_url":"https://api.example.test"}));
+            then.status(200).json_body(json!({"project_id":"fixture", "api_key":"fixture-api-secret", "api_base_url":api_url}));
         }
     });
     let dir = tempfile::tempdir().unwrap();
@@ -50,10 +53,13 @@ fn fixture(error: Option<&str>, auto: bool, mismatch: bool) {
     }
     assert_eq!(
         output.status.success(),
-        error.is_none() && !mismatch,
+        error.is_none() && !mismatch && api_url.starts_with("https://"),
         "{stdout} {stderr}"
     );
-    assert_eq!(credential.exists(), error.is_none() && !mismatch);
+    assert_eq!(
+        credential.exists(),
+        error.is_none() && !mismatch && api_url.starts_with("https://")
+    );
     #[cfg(unix)]
     if credential.exists() {
         use std::os::unix::fs::PermissionsExt;
@@ -92,4 +98,9 @@ fn slow_down_stops_at_deadline() {
 #[test]
 fn project_mismatch_does_not_save_credentials() {
     fixture(None, false, true);
+}
+
+#[test]
+fn plaintext_api_origin_is_rejected() {
+    fixture_url(None, false, false, "http://api.example.test");
 }

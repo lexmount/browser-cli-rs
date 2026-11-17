@@ -118,15 +118,37 @@ pub fn status(path: Option<&Path>) -> Result<CredentialStatus> {
 
 pub fn save_credentials(credentials: &Credentials, path: Option<&Path>) -> Result<PathBuf> {
     let path = credentials_path(path)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    fs::create_dir_all(parent)?;
+    // Never truncate through a symlink or expose a newly written key under the
+    // process umask before chmod. Rename a private file in the same directory.
+    if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Error::Config(
+            "Refusing to save credentials through a symlink".into(),
+        ));
     }
-    fs::write(&path, serde_json::to_vec_pretty(credentials)?)?;
+    let temporary = parent.join(format!(".browser-cli-{}.tmp", random_urlsafe(16)));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let result = (|| -> std::io::Result<()> {
+        let mut file = options.open(&temporary)?;
+        file.write_all(&serde_json::to_vec_pretty(credentials)?)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result?;
     Ok(path)
 }
 
@@ -355,6 +377,9 @@ fn extract_api_key(payload: &Value) -> Option<Credentials> {
             .or_else(|| payload.get("api_key"))
             .and_then(Value::as_str);
         if let (Some(project_id), Some(api_key)) = (project_id, api_key) {
+            if project_id.trim().is_empty() || api_key.trim().is_empty() {
+                continue;
+            }
             let scopes = value
                 .get("scopes")
                 .or_else(|| value.get("scope"))
@@ -521,7 +546,14 @@ pub fn device_login(
                 "Authorized project does not match --project-id; credentials were not saved".into(),
             ));
         }
-        if is_internal_api_base_url(&credential.api_base_url) {
+        if is_internal_api_base_url(&credential.api_base_url)
+            || Url::parse(&credential.api_base_url).map_or(true, |u| {
+                u.scheme() != "https"
+                    || u.host_str().is_none()
+                    || !u.username().is_empty()
+                    || u.password().is_some()
+            })
+        {
             return Err(Error::Authentication("Invalid device API base URL".into()));
         }
         credential.connect_base_url = Some(connect_base_url.trim_end_matches('/').to_owned());
@@ -543,6 +575,34 @@ pub fn prefers_device_login() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(unix)]
+    fn credential_save_rejects_symlink_and_replaces_file_privately() {
+        use std::os::unix::{fs::PermissionsExt, fs::symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target");
+        std::fs::write(&target, "original").unwrap();
+        let link = dir.path().join("credentials");
+        symlink(&target, &link).unwrap();
+        let credentials =
+            super::extract_api_key(&serde_json::json!({"project_id":"p","api_key":"secret"}))
+                .unwrap();
+        assert!(super::save_credentials(&credentials, Some(&link)).is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "original");
+        super::save_credentials(&credentials, Some(&target)).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    }
+    #[test]
+    fn empty_credentials_are_rejected() {
+        assert!(
+            super::extract_api_key(&serde_json::json!({"project_id":"", "api_key":""})).is_none()
+        );
+    }
+
     use super::*;
 
     #[test]
