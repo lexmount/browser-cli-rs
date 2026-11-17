@@ -22,7 +22,7 @@ jobs:
 
   build-macos:
     needs: validate-version
-    runs-on: macos-14
+    runs-on: macos-15
     environment: macos-release
     steps:
       - uses: actions/checkout@v5
