@@ -146,3 +146,16 @@ jobs:
           if ($dependencies -match '(?im)^\s+(?:VCRUNTIME|MSVCP)\d*[^\s]*\.dll\s*$') {
             throw "Windows release dynamically depends on the Visual C++ Redistributable"
           }
+
+  macos-release:
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - run: cargo test --locked --target aarch64-apple-darwin
+      - run: cargo build --release --locked --target aarch64-apple-darwin
+      - name: Verify standalone macOS executable
+        run: target/aarch64-apple-darwin/release/browser-cli version
