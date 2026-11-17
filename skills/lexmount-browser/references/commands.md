@@ -9,7 +9,7 @@ browser-cli doctor
 browser-cli auth status
 browser-cli auth login [--client-name "NAME"]
 
-browser-cli session create [--browser-mode normal|light]
+browser-cli session create [--browser-mode normal|light] [--enable-captcha]
   [--context-id ID --context-mode read_write|read_only]
   [--downloads] [--recording] [--window-size 1920,1080]
   [--official-proxy | --local-proxy-tunnel-id TUNNEL_ID]
@@ -46,6 +46,22 @@ browser-cli action pdf --session-id ID --path FILE [--print-background]
 browser-cli action eval --session-id ID --expression JS
 browser-cli action raw --session-id ID --method CDP_METHOD --params-json JSON
 ```
+
+## Automatic CAPTCHA handling
+
+```bash
+browser-cli session create --browser-mode normal --enable-captcha
+```
+
+`--enable-captcha` enables server-side automatic CAPTCHA handling for the created
+session only. It is off by default and supports only `normal` browser mode;
+requesting it with any other mode returns a configuration error before any
+session request. Availability and usage are subject to your plan's CAPTCHA quota.
+Rust SDK callers can set `CreateSession.enable_captcha` to `Some(true)`; the
+default `None` omits the field from the request.
+
+This option requires a binary built from source containing this feature;
+updating Skill documentation alone does not update an installed binary.
 
 ## Page selection
 
