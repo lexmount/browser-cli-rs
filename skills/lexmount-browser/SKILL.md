@@ -16,7 +16,7 @@ Do not infer `<skill-root>` from the working directory.
 
 Select the native Rust binary for the current platform:
 
-- macOS arm64: run `sh "<skill-root>/scripts/bootstrap.sh"` when `<skill-root>/bin/browser-cli` is missing, then invoke `"<skill-root>/bin/browser-cli"`.
+- Linux x86_64 and macOS arm64: run `sh "<skill-root>/scripts/bootstrap.sh"` when `<skill-root>/bin/browser-cli` is missing, then invoke `"<skill-root>/bin/browser-cli"`.
 - Windows x64: run `& "<skill-root>\scripts\bootstrap.ps1"` in PowerShell when `<skill-root>\bin\browser-cli.exe` is missing, then invoke `& "<skill-root>\bin\browser-cli.exe"`.
 
 Both bootstrap scripts download the fixed release version from Tencent Cloud COS and verify its SHA-256 digest.
@@ -29,7 +29,7 @@ Do not run the binary for the other platform. Both platform binaries emit JSON. 
 ## Setup
 
 1. Resolve `<skill-root>` from this `SKILL.md` and select the matching platform paths above.
-2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on macOS arm64. On Windows, invoke the installed binary's `doctor` command directly, not `scripts/doctor.ps1`: PowerShell uses `& "<skill-root>\bin\browser-cli.exe" doctor`; Bash/Git Bash uses `"<skill-root>/bin/browser-cli.exe" doctor` with forward slashes in the absolute path. In WorkBuddy on Windows, prefer its Bash tool when available: its PowerShell tool can return only an exit code and omit the JSON. Keep the tool's normal permissions and sandbox.
+2. Run the Skill-local bootstrap script if the binary is missing. Then run `sh "<skill-root>/scripts/doctor.sh"` on Linux x86_64 or macOS arm64. On Windows, invoke the installed binary's `doctor` command directly, not `scripts/doctor.ps1`: PowerShell uses `& "<skill-root>\bin\browser-cli.exe" doctor`; Bash/Git Bash uses `"<skill-root>/bin/browser-cli.exe" doctor` with forward slashes in the absolute path. In WorkBuddy on Windows, prefer its Bash tool when available: its PowerShell tool can return only an exit code and omit the JSON. Keep the tool's normal permissions and sandbox.
 3. If credentials are missing, run `browser-cli auth login`. Pass `--client-name "<agent-name>"` when the current Agent has a user-facing name; otherwise the CLI uses `Agent`. Let the user approve in their browser. Never ask them to paste an API key into chat.
 4. After changing credentials, run `browser-cli doctor` again; otherwise use the doctor result already obtained. Continue only when its actual JSON reports `ready_for_browser_actions: true`. An exit code without that JSON is not a readiness result; see [Windows diagnostic output](references/troubleshooting.md#windows-diagnostic-output).
 

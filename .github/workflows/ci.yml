@@ -56,10 +56,11 @@ jobs:
           output="$(PATH="$test_dir/fake-path:/usr/bin:/bin" "$test_dir/skill/scripts/doctor.sh")"
           status=$?
           set -e
-          test "$status" -eq 2
-          test "$output" = '{"ok":false,"error":"unsupported_platform","message":"This Skill supports macOS arm64 through scripts/doctor.sh and Windows x64 through scripts/doctor.ps1."}'
+          test "$status" -eq 1
+          test "$output" = '{"ok":false,"error":"command_not_found","message":"Skill-local browser-cli is missing. Run scripts/bootstrap.sh first."}'
           ! grep -q 'command -v browser-cli' skills/lexmount-browser/scripts/doctor.sh
           ! grep -q 'Get-Command browser-cli' skills/lexmount-browser/scripts/doctor.ps1
+      - run: ./tests/linux_bootstrap.py
       - name: Verify runtime packaging contract
         run: |
           ! grep -R -E 'python3[[:space:]]|python[[:space:]]+-m|uv[[:space:]]' scripts skills .github/workflows

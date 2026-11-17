@@ -299,3 +299,10 @@ Tencent Cloud COS through the `cos-release` GitHub environment. It requires
 `TENCENT_CLOUD_SECRET_ID` and `TENCENT_CLOUD_SECRET_KEY` secrets plus
 `COS_BUCKET`, `COS_REGION`, `COS_PUBLIC_BASE_URL`, and `COS_OBJECT_PREFIX`
 variables.
+
+
+### Linux and SSH login
+
+Linux x86_64 uses the static musl release and the same `scripts/bootstrap.sh` and `scripts/doctor.sh` as macOS. Linux ARM64 is not currently a published target.
+
+`browser-cli auth login --no-open` prints the authorization URL on stderr and waits for the callback; stdout remains the final JSON result. The default login attempts to open a browser, but keeps waiting if the desktop opener is missing. On a headless/SSH host, forward the printed callback port from your desktop using `ssh -L PORT:127.0.0.1:PORT HOST`, then open the printed URL on your desktop. Keep the login process running until it completes. Do not post authorization URLs or credentials in chat.

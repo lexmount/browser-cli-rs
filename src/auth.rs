@@ -19,7 +19,7 @@ use crate::{Error, Result};
 pub const DEFAULT_CONNECT_BASE_URL: &str = "https://browser.lexmount.cn";
 pub const DEFAULT_CLIENT_NAME: &str = "Agent";
 pub const DEFAULT_SCOPES: &[&str] = &["browser:sessions", "browser:contexts", "browser:actions"];
-const LOGIN_SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Lexmount connected</title><h1>Lexmount connected</h1><p>You can close this window and return to your agent.</p>";
+const LOGIN_SUCCESS_PAGE: &str = "<!doctype html><meta charset=utf-8><title>Lexmount authorization received</title><h1>Authorization received</h1><p>Return to your agent to confirm login completed.</p>";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
@@ -181,8 +181,16 @@ pub fn login_with_client_name(
         &state,
         &challenge,
     )?;
-    if open_browser {
-        open::that(url.as_str()).map_err(|e| Error::Io(std::io::Error::other(e)))?;
+    // Progress belongs on stderr so stdout remains a single command result.
+    eprintln!("Open this URL in a browser on this machine to authorize:\n{url}");
+    eprintln!(
+        "For SSH, forward the callback port {} to this machine before opening the URL.",
+        listener.local_addr()?.port()
+    );
+    if open_browser && let Err(error) = open::that(url.as_str()) {
+        eprintln!(
+            "Could not open a local browser ({error}). Open the URL manually; waiting for authorization."
+        );
     }
 
     let started = Instant::now();
@@ -200,6 +208,20 @@ pub fn login_with_client_name(
                     .ok_or_else(|| Error::Config("invalid OAuth callback request".into()))?;
                 let callback = Url::parse(&format!("http://127.0.0.1{target}"))
                     .map_err(|e| Error::Config(format!("invalid OAuth callback: {e}")))?;
+                if callback.path() != "/callback"
+                    || callback
+                        .query_pairs()
+                        .find(|(key, _)| key == "state")
+                        .map(|(_, value)| value.into_owned())
+                        .as_deref()
+                        != Some(state.as_str())
+                {
+                    let _ = stream.write_all(b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    if started.elapsed() >= timeout {
+                        return Err(Error::Timeout("OAuth callback was not received".into()));
+                    }
+                    continue;
+                }
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -212,7 +234,7 @@ pub fn login_with_client_name(
                 thread::sleep(Duration::from_millis(100))
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                return Err(Error::Timeout("OAuth callback was not received".into()));
+                return Err(Error::Timeout("OAuth callback was not received. On SSH/headless Linux, open the authorization URL in your desktop browser with the callback port forwarded to this machine.".into()));
             }
             Err(e) => return Err(e.into()),
         }
@@ -429,7 +451,7 @@ mod tests {
                 .to_ascii_lowercase()
                 .contains("workbuddy")
         );
-        assert!(LOGIN_SUCCESS_PAGE.contains("return to your agent"));
+        assert!(LOGIN_SUCCESS_PAGE.contains("Return to your agent"));
     }
 
     #[test]
