@@ -6,6 +6,25 @@ on:
     branches: [main]
 
 jobs:
+  plugin-packages:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python tests/test_plugin_packages.py
+      - name: Verify independent MCP Skill ZIP
+        if: runner.os != 'Windows'
+        run: |
+          ./scripts/package-skill.sh lexmount-browser-mcp
+          unzip -t dist/lexmount-browser-mcp.zip
+          unzip -Z1 dist/lexmount-browser-mcp.zip | grep -qx SKILL.md
+          ! unzip -Z1 dist/lexmount-browser-mcp.zip | grep -Eq '^(bin|scripts)/'
+
   test:
     runs-on: ubuntu-latest
     steps:

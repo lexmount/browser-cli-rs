@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "lexmount-cloud-browser": {
+      "type": "http",
+      "url": "https://browser.lexmount.cn/chatgpt-app/mcp",
+      "oauth_resource": "https://browser.lexmount.cn/chatgpt-app/mcp"
+    }
+  }
+}

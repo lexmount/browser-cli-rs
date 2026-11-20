@@ -1,0 +1,13 @@
+interface:
+  display_name: "LexMount 云浏览器"
+  short_description: "通过云端浏览器浏览网页、提取信息、填写表单并核验交互结果，支持网站登录"
+  default_prompt: "使用 $lexmount-browser-mcp 打开 https://example.com，告诉我主要内容和链接，完成后关闭浏览器。"
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "lexmount-cloud-browser"
+      description: "LexMount 远程浏览器服务，由宿主管理网页 OAuth 授权"
+      transport: "streamable_http"
+      url: "https://browser.lexmount.cn/chatgpt-app/mcp"
+policy:
+  allow_implicit_invocation: true
