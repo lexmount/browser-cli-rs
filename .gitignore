@@ -1,4 +1,6 @@
 /target/
 /dist/
 /skills/lexmount-browser/bin/
+/plugins/codex-global/skills/lexmount-browser/bin/
+/plugins/codex-global/skills/lexmount-browser/scripts/__pycache__/
 *.tmp

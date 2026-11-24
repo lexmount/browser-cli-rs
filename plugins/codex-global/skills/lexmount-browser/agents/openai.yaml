@@ -1,0 +1,4 @@
+interface:
+  display_name: "Lexmount Browser Global"
+  short_description: "Cloud browsing with resumable device authorization"
+  default_prompt: "Use $lexmount-browser to browse the requested website and verify the result."

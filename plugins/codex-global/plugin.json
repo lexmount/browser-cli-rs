@@ -1,0 +1,34 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "lexmount-browser-global",
+  "version": "4.0.0",
+  "description": "Browse and automate websites from cloud workspaces with Skill, native CLI and device authorization.",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Lexmount Browser (Global)",
+        "shortDescription": "Cloud browser with device login",
+        "longDescription": "Use Lexmount Global cloud browsers from Codex or ChatGPT cloud workspaces through a native CLI. Authorize on another device using a short code; the cloud workspace receives and privately stores its own credential. Open websites, inspect pages, fill forms and export screenshots or PDFs. Requires Linux x86_64, Python 3 and outbound HTTPS.",
+        "developerName": "Lexmount",
+        "category": "Productivity",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "websiteURL": "https://browser.lexmount.com",
+        "supportURL": "https://browser.lexmount.com/contact",
+        "privacyPolicyURL": "https://browser.lexmount.com/privacy",
+        "termsOfServiceURL": "https://browser.lexmount.com/terms",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg",
+        "defaultPrompt": [
+          "Open https://example.com, summarize the page and list its links.",
+          "Open https://www.selenium.dev/selenium/web/web-form.html, fill Text input with Browser test, verify it, and do not submit."
+        ]
+      },
+      "publication": {
+        "release_notes": "4.0.0: Pure Skill and native CLI cloud edition. Device authorization uses separate start and poll commands that resume across conversation turns, with isolated Global credentials. Uses published CLI 1.5.0."
+      }
+    }
+  }
+}

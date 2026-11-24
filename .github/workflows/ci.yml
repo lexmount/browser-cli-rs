@@ -6,6 +6,18 @@ on:
     branches: [main]
 
 jobs:
+  global-cloud-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the pinned native cloud CLI
+        run: sh plugins/codex-global/skills/lexmount-browser/scripts/bootstrap.sh
+      - name: Verify resumable device authorization and native credential compatibility
+        env:
+          LEXMOUNT_TEST_BINARY: ${{ github.workspace }}/plugins/codex-global/skills/lexmount-browser/bin/browser-cli
+        run: ./tests/global_cloud_plugin.py
+
   test:
     runs-on: ubuntu-latest
     steps:
