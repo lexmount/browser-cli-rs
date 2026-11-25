@@ -146,6 +146,8 @@ pub struct ContextList {
 pub struct CreateSession {
     pub browser_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_captcha: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub extension_ids: Option<Vec<String>>,
@@ -171,6 +173,7 @@ impl Default for CreateSession {
     fn default() -> Self {
         Self {
             browser_mode: "normal".into(),
+            enable_captcha: None,
             context: None,
             extension_ids: None,
             proxy: None,
